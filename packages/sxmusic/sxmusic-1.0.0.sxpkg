@@ -1766,7 +1766,7 @@ end
 drawStatus()
 parallel.waitForAny(audioLoop, eventLoop, heartbeatLoop)
 manifest.lua
-753
+809
 -- manifest.lua
 return {
     format = "sxpkg-1",
@@ -1785,8 +1785,8 @@ return {
 
     files = {
         { path = "/usr/bin/music.lua",        source = "music.lua",        executable = true },
-        { path = "/lib/sxmusic/cli.lua",      source = "cli.lua" },
-        { path = "/lib/sxmusic/gui.lua",      source = "gui.lua" },
+        { path = "/lib/sxmusic/cli.lua",      source = "cli.lua",          executable = true },
+        { path = "/lib/sxmusic/gui.lua",      source = "gui.lua",          executable = true },
         { path = "/usr/bin/sxmusic-node.lua", source = "speaker_node.lua", executable = true }
     },
 

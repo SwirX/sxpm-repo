@@ -34,8 +34,8 @@
         "versions": {
             "1.0.0": {
                 "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sxmusic/sxmusic-1.0.0.sxpkg",
-                "sha256": "26ecd05efd8da78108ae2ffd865842bb7f2fe4bd52ef9569561e04853ec582cc",
-                "size": 59122
+                "sha256": "a2be2f239c7709701fe91feedf74a1b57a8701e54aba4981b4ac1b60c1a6595b",
+                "size": 59178
             }
         }
     }
