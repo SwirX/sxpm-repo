@@ -14,8 +14,8 @@
             },
             "2.0.2": {
                 "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sxos-core/sxos-core-2.0.2.sxpkg",
-                "sha256": "259f52e3b8b281b4f7795612cdb5819765e70776efb45460de81d4f3fddfee24",
-                "size": 148118
+                "sha256": "30d03932924cfc1c4c02c2dfffc2220de41815fa088f002be9706c810104d466",
+                "size": 148898
             }
         }
     },
