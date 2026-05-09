@@ -1,0 +1,1829 @@
+SXP1
+music.lua
+751
+require("sx")
+
+local isColor = term.isColor()
+local settingsFile = ".sxmusic_pref"
+
+local sxuiPath = "/lib/sxui/?.lua"
+if not package.path:find(sxuiPath, 1, true) then
+    package.path = package.path .. ";" .. sxuiPath
+end
+
+local pref = nil
+if fs.exists(settingsFile) then
+    local f = fs.open(settingsFile, "r")
+    if f then
+        pref = f.readAll()
+        f.close()
+    end
+end
+
+-- Trim whitespace just in case
+if type(pref) == "string" then
+    pref = pref:gsub("^%s*(.-)%s*$", "%1")
+end
+
+if pref == "cli" then
+    shell.run("/lib/sxmusic/cli.lua")
+elseif pref == "gui" then
+    shell.run("/lib/sxmusic/gui.lua")
+else
+    if isColor then
+        shell.run("/lib/sxmusic/gui.lua")
+    else
+        shell.run("/lib/sxmusic/cli.lua")
+    end
+end
+gui.lua
+28679
+require("sx")
+-- SX-UI path is bootstrapped by /sx.lua
+local ui                     = require("ui")
+local dfpwm                  = require("cc.audio.dfpwm")
+
+local MUSICLO_API            = "https://ipod-2to6magyna-uc.a.run.app/"
+local BACKEND_API            = "http://minecraft.bouyakhsass.com:3000"
+local REDNET_PROTOCOL        = "sx-music"
+local REDNET_HOSTNAME        = "sx-music-host"
+local RADIO_REFILL_THRESHOLD = 3
+
+local localSpeakers          = { peripheral.find("speaker") }
+local modem                  = peripheral.find("modem")
+
+if #localSpeakers == 0 and not modem then
+    error("Attach at least a speaker or a modem (for speaker nodes) and restart.", 0)
+end
+
+if modem then
+    rednet.open(peripheral.getName(modem))
+    rednet.host(REDNET_PROTOCOL, REDNET_HOSTNAME)
+end
+
+local state = {
+    nowPlaying         = nil,
+    queue              = {},
+    featuredList       = {},
+    searchResults      = nil,
+    searchQuery        = "",
+    isPlaying          = false,
+    isLooping          = false,
+    isRandom           = false,
+    currentPage        = "home",
+    needsRedraw        = false,
+
+    streamPhase        = "idle",
+    playerHandle       = nil,
+    dfpwmDecoder       = nil,
+    audioBuffer        = nil,
+    chunkSize          = 16 * 1024 - 4,
+    headerRemainder    = nil,
+
+    pendingSearchUrl   = nil,
+    pendingDownloadUrl = nil,
+    pendingFeaturedUrl = nil,
+    pendingRelatedUrl  = nil,
+
+    speakerNodes       = {},
+}
+
+local COLOR_ORDER = {
+    colors.white, colors.orange, colors.magenta, colors.lightBlue,
+    colors.yellow, colors.lime, colors.pink, colors.gray,
+    colors.lightGray, colors.cyan, colors.purple, colors.blue,
+    colors.brown, colors.green, colors.red, colors.black,
+}
+local savedPalette = {}
+
+local function applyYTMPalette()
+    for i, c in ipairs(COLOR_ORDER) do savedPalette[i] = { term.getPaletteColor(c) } end
+    term.setPaletteColor(colors.black, 0x0F0F0F)
+    term.setPaletteColor(colors.gray, 0x212121)
+    term.setPaletteColor(colors.lightGray, 0xAAAAAA)
+    term.setPaletteColor(colors.red, 0xFF0033)
+    term.setPaletteColor(colors.green, 0x00C853)
+    term.setPaletteColor(colors.white, 0xFFFFFF)
+    term.setPaletteColor(colors.purple, 0x272727)
+end
+
+local function restorePalette()
+    for i, c in ipairs(COLOR_ORDER) do term.setPaletteColor(c, table.unpack(savedPalette[i])) end
+end
+
+local function truncate(text, maxLen)
+    if not text or maxLen <= 0 then return "" end
+    if #text <= maxLen then return text end
+    return text:sub(1, maxLen - 3) .. "..."
+end
+
+local function songInQueue(song)
+    for _, q in ipairs(state.queue) do
+        if q.id == song.id then return true end
+    end
+    return false
+end
+
+local function nodeCount()
+    local n = 0
+    for _ in pairs(state.speakerNodes) do n = n + 1 end
+    return n
+end
+
+local function broadcastToNodes(message)
+    if not modem then return end
+    for computerId in pairs(state.speakerNodes) do
+        rednet.send(computerId, message, REDNET_PROTOCOL)
+    end
+end
+
+local function saveLastSong()
+    if state.nowPlaying then
+        local f = fs.open(".last_song", "w")
+        if f then
+            f.write(textutils.serialiseJSON(state.nowPlaying)); f.close()
+        end
+    end
+end
+
+local function stopCurrentStream()
+    state.isPlaying       = false
+    state.streamPhase     = "idle"
+    state.playerHandle    = nil
+    state.dfpwmDecoder    = nil
+    state.audioBuffer     = nil
+    state.headerRemainder = nil
+    for _, s in ipairs(localSpeakers) do s.stop() end
+    broadcastToNodes({ type = "stop" })
+end
+
+local function playSong(song)
+    stopCurrentStream()
+    state.nowPlaying  = song
+    state.isPlaying   = true
+    state.streamPhase = "fetching"
+    saveLastSong()
+
+    local url                = MUSICLO_API .. "?v=2&id=" .. textutils.urlEncode(song.id)
+    state.pendingDownloadUrl = url
+    http.request({ url = url, binary = true })
+    broadcastToNodes({ type = "play", url = url, name = song.name or song.title, artist = song.artist })
+
+    if #state.queue <= RADIO_REFILL_THRESHOLD then
+        state.pendingRelatedUrl = BACKEND_API .. "/related?id=" .. textutils.urlEncode(song.id)
+        http.request(state.pendingRelatedUrl)
+    end
+end
+
+local function skipToNext()
+    if #state.queue > 0 then
+        local nextIdx = 1
+        if state.isRandom and #state.queue > 1 then
+            nextIdx = math.random(1, #state.queue)
+        end
+        playSong(table.remove(state.queue, nextIdx))
+    else
+        stopCurrentStream()
+        state.nowPlaying = nil
+    end
+end
+
+local function togglePlayPause()
+    if state.isPlaying then
+        state.isPlaying = false
+        for _, s in ipairs(localSpeakers) do s.stop() end
+        broadcastToNodes({ type = "stop" })
+    elseif state.nowPlaying then
+        playSong(state.nowPlaying)
+    end
+end
+
+local function toggleLoop()
+    state.isLooping = not state.isLooping
+end
+
+local function addToQueue(song) table.insert(state.queue, song) end
+local function removeFromQueue(i) table.remove(state.queue, i) end
+
+local function searchYoutube(query)
+    state.searchResults    = nil
+    state.searchQuery      = query
+    state.pendingSearchUrl = MUSICLO_API .. "?search=" .. textutils.urlEncode(query)
+    http.request(state.pendingSearchUrl)
+end
+
+local function loadLastSong()
+    local song = nil
+    if fs.exists(".last_song") then
+        local f = fs.open(".last_song", "r")
+        if f then
+            local raw = f.readAll()
+            f.close()
+            local ok, parsed = pcall(textutils.unserialiseJSON, raw)
+            if ok and type(parsed) == "table" and parsed.id then
+                song = parsed
+            end
+        end
+    end
+
+    if not song then
+        song = {
+            id = "dQw4w9WgXcQ",
+            name = "Never Gonna Give You Up",
+            title = "Never Gonna Give You Up",
+            artist =
+            "Rick Astley"
+        }
+    end
+
+    state.featuredList = { song }
+    state.pendingRelatedUrl = BACKEND_API .. "/related?id=" .. textutils.urlEncode(song.id)
+    http.request(state.pendingRelatedUrl)
+    state.queue = {}
+    playSong(song)
+end
+
+local function toggleRandom()
+    state.isRandom = not state.isRandom
+end
+
+local hasLocalSpeakers = #localSpeakers > 0
+
+local function audioLoop()
+    while true do
+        sleep(0.05)
+
+        if state.streamPhase == "streaming" and state.isPlaying then
+            if state.audioBuffer then
+                if hasLocalSpeakers then
+                    local ok = true
+                    for _, s in ipairs(localSpeakers) do
+                        if not s.playAudio(state.audioBuffer) then ok = false end
+                    end
+                    if ok then
+                        state.audioBuffer = nil
+                    else
+                        state.streamPhase = "waiting_buffer"
+                    end
+                else
+                    state.audioBuffer = nil
+                end
+            end
+
+            if state.streamPhase == "streaming" and not state.audioBuffer then
+                local raw = state.playerHandle.read(state.chunkSize)
+
+                if not raw or #raw == 0 then
+                    state.playerHandle.close()
+                    state.playerHandle = nil
+                    state.streamPhase  = "song_ended"
+                else
+                    if state.headerRemainder then
+                        raw                   = state.headerRemainder .. raw
+                        state.headerRemainder = nil
+                        state.chunkSize       = 16 * 1024
+                    end
+
+                    if hasLocalSpeakers then
+                        local decoded = state.dfpwmDecoder(raw)
+                        local ok = true
+                        for _, s in ipairs(localSpeakers) do
+                            if not s.playAudio(decoded) then ok = false end
+                        end
+                        if not ok then
+                            state.audioBuffer = decoded
+                            state.streamPhase = "waiting_buffer"
+                        end
+                    else
+                        sleep(math.max(#raw * 8 / 48000 - 0.05, 0))
+                    end
+                end
+            end
+        end
+
+        if state.streamPhase == "song_ended" then
+            state.streamPhase = "idle"
+            if state.isLooping and state.nowPlaying then
+                playSong(state.nowPlaying)
+            else
+                skipToNext()
+            end
+            state.needsRedraw = true
+        end
+    end
+end
+
+local function httpEventLoop()
+    while true do
+        local event, p1, p2 = os.pullEvent()
+
+        if event == "speaker_audio_empty" and state.streamPhase == "waiting_buffer" then
+            if state.audioBuffer then
+                local ok = true
+                for _, s in ipairs(localSpeakers) do
+                    if not s.playAudio(state.audioBuffer) then ok = false end
+                end
+                if ok then
+                    state.audioBuffer = nil
+                    state.streamPhase = "streaming"
+                end
+            else
+                state.streamPhase = "streaming"
+            end
+        end
+
+        if event == "http_success" then
+            local url, handle = p1, p2
+
+            if url == state.pendingDownloadUrl then
+                local tag = handle.read(4)
+                if tag == "RIFF" then
+                    handle.close()
+                    skipToNext()
+                else
+                    state.playerHandle    = handle
+                    state.headerRemainder = tag
+                    state.chunkSize       = 16 * 1024 - 4
+                    state.dfpwmDecoder    = dfpwm.make_decoder()
+                    state.streamPhase     = "streaming"
+                end
+                state.needsRedraw = true
+            elseif url == state.pendingSearchUrl then
+                local raw = textutils.unserialiseJSON(handle.readAll())
+                handle.close()
+                local parsed = {}
+                for _, track in ipairs(raw or {}) do
+                    if track.id and (track.title or track.name) then
+                        table.insert(parsed, track)
+                    end
+                end
+                state.searchResults = parsed
+                state.needsRedraw   = true
+            elseif url == state.pendingRelatedUrl then
+                local raw = textutils.unserialiseJSON(handle.readAll())
+                handle.close()
+
+                state.featuredList = {}
+                for _, track in ipairs(raw or {}) do
+                    track.name = track.title
+                    table.insert(state.featuredList, track)
+                    if not songInQueue(track) then
+                        table.insert(state.queue, track)
+                    end
+                end
+                while #state.featuredList > 10 do
+                    table.remove(state.featuredList)
+                end
+                state.needsRedraw = true
+            end
+        end
+
+        if event == "http_failure" then
+            local url = p1
+            if url == state.pendingDownloadUrl then
+                skipToNext()
+                state.needsRedraw = true
+            elseif url == state.pendingSearchUrl then
+                state.searchResults = {}
+                state.needsRedraw   = true
+            end
+        end
+    end
+end
+
+local function rednetLoop()
+    if not modem then
+        while true do sleep(9999) end
+    end
+    while true do
+        local senderId, message = rednet.receive(REDNET_PROTOCOL)
+        if type(message) == "table" then
+            if message.type == "register" then
+                state.speakerNodes[senderId] = os.clock()
+                state.needsRedraw = true
+            elseif message.type == "pong" then
+                state.speakerNodes[senderId] = os.clock()
+            end
+        end
+    end
+end
+
+local function buildNowPlayingBar(screen, W)
+    local bar            = ui.Element()
+    bar.position.offsetX = 1
+    bar.position.offsetY = 1
+    bar.size.offsetX     = W
+    bar.size.offsetY     = 1
+    bar.backgroundColor  = colors.gray
+    screen:addChild(bar)
+
+    local buttonZoneWidth = 14
+    local textWidth       = W - buttonZoneWidth - 1
+    local displayText
+
+    if state.nowPlaying then
+        local t = truncate(state.nowPlaying.name, math.floor(textWidth * 0.6))
+        local a = truncate(state.nowPlaying.artist, math.floor(textWidth * 0.38))
+        displayText = t .. "  " .. a
+    else
+        displayText = truncate("SX-Music  " .. nodeCount() .. " node(s)", textWidth)
+    end
+
+    local titleLabel            = ui.Label(truncate(displayText, textWidth))
+    titleLabel.position.offsetX = 2
+    titleLabel.position.offsetY = 1
+    titleLabel.size.offsetX     = textWidth
+    titleLabel.foregroundColor  = state.nowPlaying and colors.white or colors.lightGray
+    titleLabel.backgroundColor  = colors.gray
+    bar:addChild(titleLabel)
+
+    local function addBarBtn(text, xFromRight, bgColor, action)
+        local btn            = ui.Button(text)
+        btn.position.offsetX = W - xFromRight + 1
+        btn.position.offsetY = 1
+        btn.size.offsetX     = #text
+        btn.size.offsetY     = 1
+        btn.backgroundColor  = bgColor
+        btn.foregroundColor  = colors.white
+        btn.pressedColor     = colors.lightGray
+        btn.onClick          = action
+        screen:addChild(btn)
+    end
+
+    addBarBtn(state.isLooping and " LP" or " --", 3,
+        state.isLooping and colors.green or colors.gray,
+        function()
+            toggleLoop(); screen:stop()
+        end)
+
+    addBarBtn(state.isRandom and " RN" or " --", 7,
+        state.isRandom and colors.green or colors.gray,
+        function()
+            toggleRandom(); screen:stop()
+        end)
+
+    addBarBtn(" >>", 11, colors.gray,
+        function()
+            skipToNext(); screen:stop()
+        end)
+
+    addBarBtn(state.isPlaying and " ||" or " |>", 15,
+        state.isPlaying and colors.red or colors.green,
+        function()
+            togglePlayPause(); screen:stop()
+        end)
+end
+
+local function buildTabBar(screen, W)
+    local tabDefs  = { { "Home", "home" }, { "Search", "search" }, { "Queue", "queue" } }
+    local tabWidth = math.floor(W / #tabDefs)
+    for i, def in ipairs(tabDefs) do
+        local btn            = ui.Button(def[1])
+        btn.position.offsetX = (i - 1) * tabWidth + 1
+        btn.position.offsetY = 2
+        btn.size.offsetX     = tabWidth
+        btn.size.offsetY     = 1
+        btn.backgroundColor  = state.currentPage == def[2] and colors.red or colors.gray
+        btn.foregroundColor  = colors.white
+        btn.pressedColor     = colors.lightGray
+        local page           = def[2]
+        btn.onClick          = function()
+            state.currentPage = page; screen:stop()
+        end
+        screen:addChild(btn)
+    end
+end
+
+local function formatListItemName(idx, name)
+    if not term.isColor() and idx then
+        return idx .. ". " .. (name or "")
+    end
+    return name or ""
+end
+
+local function buildSongCard(parent, song, cardY, rowWidth, isCompact, onPlay, onQueueToggle, drawIdx)
+    local cardHeight      = isCompact and 2 or 3
+
+    local card            = ui.Element()
+    card.position.offsetX = 1
+    card.position.offsetY = cardY
+    card.size.offsetX     = rowWidth
+    card.size.offsetY     = cardHeight
+    card.backgroundColor  = colors.gray
+    parent:addChild(card)
+
+    local btnWidth             = isCompact and 3 or 5
+    local btnZone              = btnWidth * 2 + 1
+    local textWidth            = rowWidth - btnZone - 2
+
+    local displayTitle         = formatListItemName(drawIdx, song.name)
+    local titleLine            = ui.Label(truncate(displayTitle, textWidth))
+    titleLine.position.offsetX = 2
+    titleLine.position.offsetY = 1
+    titleLine.size.offsetX     = textWidth
+    titleLine.foregroundColor  = colors.white
+    titleLine.backgroundColor  = colors.gray
+    card:addChild(titleLine)
+
+    if not isCompact then
+        local artistLine            = ui.Label(truncate(song.artist, textWidth))
+        artistLine.position.offsetX = 2
+        artistLine.position.offsetY = 2
+        artistLine.size.offsetX     = textWidth
+        artistLine.foregroundColor  = colors.lightGray
+        artistLine.backgroundColor  = colors.gray
+        card:addChild(artistLine)
+    end
+
+    local playBtn            = ui.Button(isCompact and " P" or "Play")
+    playBtn.position.offsetX = rowWidth - btnZone
+    playBtn.position.offsetY = 1
+    playBtn.size.offsetX     = btnWidth
+    playBtn.size.offsetY     = 1
+    playBtn.backgroundColor  = colors.red
+    playBtn.foregroundColor  = colors.white
+    playBtn.pressedColor     = colors.lightGray
+    playBtn.onClick          = onPlay
+    card:addChild(playBtn)
+
+    local inQueue         = songInQueue(song)
+    local qBtn            = ui.Button(inQueue and "-Q" or "+Q")
+    qBtn.position.offsetX = rowWidth - btnWidth + 1
+    qBtn.position.offsetY = 1
+    qBtn.size.offsetX     = btnWidth
+    qBtn.size.offsetY     = 1
+    qBtn.backgroundColor  = inQueue and colors.lightGray or colors.gray
+    qBtn.foregroundColor  = colors.white
+    qBtn.pressedColor     = colors.gray
+    qBtn.onClick          = onQueueToggle
+    card:addChild(qBtn)
+end
+
+local function buildHomePage(screen, W, H)
+    local contentY      = 3
+    local sp            = ui.ScrollPanel()
+    sp.position.offsetX = 1
+    sp.position.offsetY = contentY
+    sp.size.offsetX     = W
+    sp.size.offsetY     = H - contentY
+    sp.backgroundColor  = colors.black
+    screen:addChild(sp)
+
+    local isCompact      = W <= 30
+
+    local hdr            = ui.Label(#state.featuredList > 0 and "Featured" or "Loading featured...")
+    hdr.position.offsetX = 2
+    hdr.position.offsetY = 1
+    hdr.size.offsetX     = 20
+    hdr.foregroundColor  = colors.white
+    sp:addChild(hdr)
+
+    local cardHeight = isCompact and 2 or 3
+    local rowY       = 2
+    for i, song in ipairs(state.featuredList) do
+        local s = song
+        buildSongCard(sp, song, rowY, W - 1, isCompact,
+            function()
+                playSong(s); screen:stop()
+            end,
+            function()
+                if songInQueue(s) then
+                    for j, q in ipairs(state.queue) do
+                        if q.id == s.id then
+                            removeFromQueue(j); break
+                        end
+                    end
+                else
+                    addToQueue(s)
+                end
+                screen:stop()
+            end, i)
+        rowY = rowY + cardHeight + 1
+    end
+end
+
+local function buildSearchPage(screen, W, H, searchInput)
+    local isCompact          = W <= 30
+
+    local inputBg            = ui.Element()
+    inputBg.position.offsetX = 1
+    inputBg.position.offsetY = 3
+    inputBg.size.offsetX     = W
+    inputBg.size.offsetY     = 1
+    inputBg.backgroundColor  = colors.gray
+    screen:addChild(inputBg)
+
+    searchInput.position.offsetX = 2
+    searchInput.position.offsetY = 3
+    searchInput.size.offsetX     = W - 9
+    searchInput.size.offsetY     = 1
+    searchInput.backgroundColor  = colors.gray
+    searchInput.foregroundColor  = colors.white
+    searchInput.placeholder      = isCompact and "Search..." or "Search YouTube Music..."
+    searchInput.text             = state.searchQuery
+    searchInput.isFocused        = true
+    searchInput.onKey            = function(self, key)
+        if key == keys.enter and #self.text > 0 then
+            state.searchQuery = self.text
+            searchYoutube(self.text)
+            screen:stop()
+            return true
+        end
+        return false
+    end
+    screen:addChild(searchInput)
+
+    local goBtn            = ui.Button("Search")
+    goBtn.position.offsetX = W - 7
+    goBtn.position.offsetY = 3
+    goBtn.size.offsetX     = 7
+    goBtn.size.offsetY     = 1
+    goBtn.backgroundColor  = colors.red
+    goBtn.foregroundColor  = colors.white
+    goBtn.pressedColor     = colors.lightGray
+    goBtn.onClick          = function()
+        if #searchInput.text > 0 then
+            state.searchQuery = searchInput.text
+            searchYoutube(searchInput.text)
+            screen:stop()
+        end
+    end
+    screen:addChild(goBtn)
+
+    local contentY      = 4
+    local sp            = ui.ScrollPanel()
+    sp.position.offsetX = 1
+    sp.position.offsetY = contentY
+    sp.size.offsetX     = W
+    sp.size.offsetY     = H - contentY
+    sp.backgroundColor  = colors.black
+    screen:addChild(sp)
+
+    if state.searchResults == nil and #state.searchQuery > 0 then
+        local lbl            = ui.Label("Searching...")
+        lbl.position.offsetX = 2
+        lbl.position.offsetY = 1
+        lbl.size.offsetX     = 20
+        lbl.foregroundColor  = colors.lightGray
+        sp:addChild(lbl)
+    elseif state.searchResults and #state.searchResults == 0 then
+        local lbl            = ui.Label("No results.")
+        lbl.position.offsetX = 2
+        lbl.position.offsetY = 1
+        lbl.size.offsetX     = 15
+        lbl.foregroundColor  = colors.lightGray
+        sp:addChild(lbl)
+    elseif state.searchResults then
+        local cardHeight = isCompact and 2 or 3
+        local rowY       = 1
+        for i, song in ipairs(state.searchResults) do
+            local s = song
+            buildSongCard(sp, song, rowY, W - 1, isCompact,
+                function()
+                    playSong(s); state.currentPage = "home"; screen:stop()
+                end,
+                function()
+                    if songInQueue(s) then
+                        for j, q in ipairs(state.queue) do
+                            if q.id == s.id then
+                                removeFromQueue(j); break
+                            end
+                        end
+                    else
+                        addToQueue(s)
+                    end
+                    screen:stop()
+                end, i)
+            rowY = rowY + cardHeight + 1
+        end
+    end
+end
+
+local function buildQueuePage(screen, W, H)
+    local isCompact     = W <= 30
+    local contentY      = 3
+
+    local sp            = ui.ScrollPanel()
+    sp.position.offsetX = 1
+    sp.position.offsetY = contentY
+    sp.size.offsetX     = W
+    sp.size.offsetY     = H - contentY
+    sp.backgroundColor  = colors.black
+    screen:addChild(sp)
+
+    if #state.queue == 0 then
+        local lbl            = ui.Label("Queue is empty.")
+        lbl.position.offsetX = 2
+        lbl.position.offsetY = 1
+        lbl.size.offsetX     = W - 4
+        lbl.foregroundColor  = colors.lightGray
+        sp:addChild(lbl)
+        return
+    end
+
+    local cardHeight = isCompact and 2 or 3
+    local rowY       = 1
+
+    for i, song in ipairs(state.queue) do
+        local idx             = i
+        local s               = song
+        local card            = ui.Element()
+        card.position.offsetX = 1
+        card.position.offsetY = rowY
+        card.size.offsetX     = W - 1
+        card.size.offsetY     = cardHeight
+        card.backgroundColor  = colors.gray
+        sp:addChild(card)
+
+        local numLbl            = ui.Label(i .. ".")
+        numLbl.position.offsetX = 1
+        numLbl.position.offsetY = 1
+        numLbl.size.offsetX     = 3
+        numLbl.foregroundColor  = colors.lightGray
+        numLbl.backgroundColor  = colors.gray
+        card:addChild(numLbl)
+
+        local textWidth           = W - 14
+        local titleLbl            = ui.Label(truncate(song.name, textWidth))
+        titleLbl.position.offsetX = 4
+        titleLbl.position.offsetY = 1
+        titleLbl.size.offsetX     = textWidth
+        titleLbl.foregroundColor  = colors.white
+        titleLbl.backgroundColor  = colors.gray
+        card:addChild(titleLbl)
+
+        if not isCompact then
+            local artistLbl            = ui.Label(truncate(song.artist, textWidth))
+            artistLbl.position.offsetX = 4
+            artistLbl.position.offsetY = 2
+            artistLbl.size.offsetX     = textWidth
+            artistLbl.foregroundColor  = colors.lightGray
+            artistLbl.backgroundColor  = colors.gray
+            card:addChild(artistLbl)
+        end
+
+        local playBtn            = ui.Button("Play")
+        playBtn.position.offsetX = W - 9
+        playBtn.position.offsetY = 1
+        playBtn.size.offsetX     = 5
+        playBtn.size.offsetY     = 1
+        playBtn.backgroundColor  = colors.red
+        playBtn.foregroundColor  = colors.white
+        playBtn.pressedColor     = colors.lightGray
+        playBtn.onClick          = function()
+            playSong(table.remove(state.queue, idx))
+            state.currentPage = "home"
+            screen:stop()
+        end
+        card:addChild(playBtn)
+
+        local removeBtn            = ui.Button(" X ")
+        removeBtn.position.offsetX = W - 3
+        removeBtn.position.offsetY = 1
+        removeBtn.size.offsetX     = 3
+        removeBtn.size.offsetY     = 1
+        removeBtn.backgroundColor  = colors.gray
+        removeBtn.foregroundColor  = colors.lightGray
+        removeBtn.pressedColor     = colors.lightGray
+        removeBtn.onClick          = function()
+            removeFromQueue(idx); screen:stop()
+        end
+        card:addChild(removeBtn)
+
+        rowY = rowY + cardHeight + 1
+    end
+end
+
+local function buildScreen()
+    local W, H                = term.getSize()
+
+    local screen              = ui.Screen()
+    screen.backgroundColor    = colors.black
+
+    -- searchInput is hoisted here so the key handler closure can check its focus
+    -- state without needing to reach into buildSearchPage's locals
+    local searchInput         = ui.Input()
+
+    local originalHandleEvent = screen.handleEvent
+    screen.handleEvent        = function(self, event, p1, p2, p3)
+        if event == "key" then
+            local k                  = p1
+            local searchInputFocused = state.currentPage == "search" and searchInput.isFocused
+
+            if not searchInputFocused then
+                if k == keys.space then
+                    togglePlayPause(); screen:stop(); return true
+                elseif k == keys.n then
+                    skipToNext(); screen:stop(); return true
+                elseif k == keys.l then
+                    toggleLoop(); screen:stop(); return true
+                elseif k == keys.s or k == keys.tab then
+                    state.currentPage = "search"; screen:stop(); return true
+                elseif k == keys.q then
+                    state.currentPage = "queue"; screen:stop(); return true
+                elseif k == keys.h then
+                    state.currentPage = "home"; screen:stop(); return true
+                end
+            end
+        end
+        return originalHandleEvent(self, event, p1, p2, p3)
+    end
+
+    buildNowPlayingBar(screen, W)
+    buildTabBar(screen, W)
+
+    if state.currentPage == "home" then
+        buildHomePage(screen, W, H)
+    elseif state.currentPage == "search" then
+        buildSearchPage(screen, W, H, searchInput)
+    elseif state.currentPage == "queue" then
+        buildQueuePage(screen, W, H)
+    end
+
+    return screen
+end
+
+local function uiLoop()
+    while true do
+        state.needsRedraw = false
+        local screen      = buildScreen()
+
+        local base        = screen.run
+        screen.run        = function(self)
+            self.running = true
+            self:draw()
+            while self.running do
+                local ev = { os.pullEvent() }
+                if ev[1] == "sx_music_redraw" then
+                    self.running = false
+                    break
+                end
+                if ev[1] == "mouse_click" or ev[1] == "mouse_drag" then
+                    self:handleEvent("mouse_move", ev[3], ev[4])
+                end
+                self:handleEvent(table.unpack(ev))
+                if ev[1] == "mouse_click" or ev[1] == "mouse_drag" or ev[1] == "monitor_touch"
+                    or ev[1] == "key" or ev[1] == "char" or ev[1] == "mouse_up" or ev[1] == "mouse_scroll" then
+                    self:draw()
+                end
+            end
+        end
+
+        screen:run()
+    end
+end
+
+local function redrawWatcher()
+    while true do
+        sleep(1)
+        if state.needsRedraw then
+            state.needsRedraw = false
+            os.queueEvent("sx_music_redraw")
+        end
+    end
+end
+
+applyYTMPalette()
+loadLastSong()
+
+local ok, err = pcall(function()
+    parallel.waitForAny(audioLoop, httpEventLoop, rednetLoop, uiLoop, redrawWatcher)
+end)
+
+restorePalette()
+term.setBackgroundColor(colors.black)
+term.setTextColor(colors.white)
+term.clear()
+term.setCursorPos(1, 1)
+term.setCursorBlink(false)
+
+if not ok then print("SX-Music stopped: " .. tostring(err)) end
+cli.lua
+21423
+require("sx")
+local dfpwm = require("cc.audio.dfpwm")
+
+local MUSICLO_API = "https://ipod-2to6magyna-uc.a.run.app/"
+local BACKEND_API = "http://minecraft.bouyakhsass.com:3000"
+local REDNET_PROTOCOL = "sx-music"
+local REDNET_HOSTNAME = "sx-music-host"
+local RADIO_REFILL_THRESHOLD = 3
+
+local localSpeakers = { peripheral.find("speaker") }
+local modem = peripheral.find("modem")
+
+if #localSpeakers == 0 and not modem then
+    error("Attach at least a speaker or a modem (for speaker nodes) and restart.", 0)
+end
+
+if modem then
+    rednet.open(peripheral.getName(modem))
+    rednet.host(REDNET_PROTOCOL, REDNET_HOSTNAME)
+end
+
+local state = {
+    nowPlaying = nil,
+    queue = {},
+    history = {},
+    searchResults = nil,
+    searchQuery = "",
+    isPlaying = false,
+    isLooping = false,
+
+    streamPhase = "idle",
+    playerHandle = nil,
+    dfpwmDecoder = nil,
+    audioBuffer = nil,
+    chunkSize = 16 * 1024 - 4,
+    headerRemainder = nil,
+
+    pendingSearchUrl = nil,
+    pendingDownloadUrl = nil,
+    pendingFeaturedUrl = nil,
+    pendingRelatedUrl = nil,
+
+    speakerNodes = {},
+
+    menu = "home",
+    scrollOffset = 0,
+    searchSelectionStr = "",
+    queueSelectionStr = "",
+}
+
+local songStartTime = 0
+local songDuration = 180
+
+local function parseDuration(durationStr)
+    if not durationStr then return 0 end
+    if type(durationStr) == "number" then return durationStr end
+    local m, s = tostring(durationStr):match("(%d+):(%d+)")
+    if m and s then return tonumber(m) * 60 + tonumber(s) end
+    return 180
+end
+
+local function formatTime(secs)
+    local m = math.floor(secs / 60)
+    local s = math.floor(secs % 60)
+    return string.format("%d:%02d", m, s)
+end
+
+local function truncate(text, maxLen)
+    if not text or maxLen <= 0 then return "" end
+    if #text <= maxLen then return text end
+    return text:sub(1, maxLen - 3) .. "..."
+end
+
+local function songInQueue(song)
+    for _, q in ipairs(state.queue) do
+        if q.id == song.id then return true end
+    end
+    return false
+end
+
+local function nodeCount()
+    local n = 0
+    for _ in pairs(state.speakerNodes) do n = n + 1 end
+    return n
+end
+
+local function broadcastToNodes(message)
+    if not modem then return end
+    for computerId in pairs(state.speakerNodes) do
+        rednet.send(computerId, message, REDNET_PROTOCOL)
+    end
+end
+
+local function stopCurrentStream()
+    state.isPlaying = false
+    state.streamPhase = "idle"
+    state.playerHandle = nil
+    state.dfpwmDecoder = nil
+    state.audioBuffer = nil
+    state.headerRemainder = nil
+    for _, s in ipairs(localSpeakers) do s.stop() end
+    broadcastToNodes({ type = "stop" })
+end
+
+local function playSong(song)
+    stopCurrentStream()
+    state.nowPlaying = song
+    state.isPlaying = true
+    state.streamPhase = "fetching"
+
+    songDuration = parseDuration(song.duration or song.length)
+    if songDuration == 0 then songDuration = 180 end
+    songStartTime = os.clock()
+
+    local url = MUSICLO_API .. "?v=2&id=" .. textutils.urlEncode(song.id)
+    state.pendingDownloadUrl = url
+    http.request({ url = url, binary = true })
+    broadcastToNodes({ type = "play", url = url, name = song.name or song.title, artist = song.artist })
+
+    if #state.queue <= RADIO_REFILL_THRESHOLD then
+        state.pendingRelatedUrl = BACKEND_API .. "/related?id=" .. textutils.urlEncode(song.id)
+        http.request(state.pendingRelatedUrl)
+    end
+end
+
+local function skipToNext()
+    if state.nowPlaying then
+        table.insert(state.history, state.nowPlaying)
+        if #state.history > 50 then table.remove(state.history, 1) end
+    end
+    if #state.queue > 0 then
+        playSong(table.remove(state.queue, 1))
+    else
+        stopCurrentStream()
+        state.nowPlaying = nil
+    end
+end
+
+local function skipToPrevious()
+    if #state.history > 0 then
+        if state.nowPlaying then
+            table.insert(state.queue, 1, state.nowPlaying)
+        end
+        playSong(table.remove(state.history, #state.history))
+    elseif state.nowPlaying then
+        playSong(state.nowPlaying)
+    end
+end
+
+local function togglePlayPause()
+    if state.isPlaying then
+        state.isPlaying = false
+        for _, s in ipairs(localSpeakers) do s.stop() end
+        broadcastToNodes({ type = "stop" })
+    elseif state.nowPlaying then
+        playSong(state.nowPlaying)
+    end
+end
+
+local function toggleLoop()
+    state.isLooping = not state.isLooping
+end
+
+local function addToQueue(song) table.insert(state.queue, song) end
+local function removeFromQueue(i) table.remove(state.queue, i) end
+
+local function searchYoutube(query)
+    state.searchResults = nil
+    state.searchQuery = query
+    state.pendingSearchUrl = MUSICLO_API .. "?search=" .. textutils.urlEncode(query)
+    http.request(state.pendingSearchUrl)
+end
+
+local hasLocalSpeakers = #localSpeakers > 0
+
+local function audioLoop()
+    while true do
+        sleep(0.05)
+
+        if state.streamPhase == "streaming" and state.isPlaying then
+            if state.audioBuffer then
+                if hasLocalSpeakers then
+                    local ok = true
+                    for _, s in ipairs(localSpeakers) do
+                        if not s.playAudio(state.audioBuffer) then ok = false end
+                    end
+                    if ok then
+                        state.audioBuffer = nil
+                    else
+                        state.streamPhase = "waiting_buffer"
+                    end
+                else
+                    state.audioBuffer = nil
+                end
+            end
+
+            if state.streamPhase == "streaming" and not state.audioBuffer then
+                local raw = state.playerHandle.read(state.chunkSize)
+
+                if not raw then
+                    state.playerHandle.close()
+                    state.playerHandle = nil
+                    state.streamPhase = "song_ended"
+                else
+                    if state.headerRemainder then
+                        raw = state.headerRemainder .. raw
+                        state.headerRemainder = nil
+                        state.chunkSize = 16 * 1024
+                    end
+
+                    if hasLocalSpeakers then
+                        local decoded = state.dfpwmDecoder(raw)
+                        local ok = true
+                        for _, s in ipairs(localSpeakers) do
+                            if not s.playAudio(decoded) then ok = false end
+                        end
+                        if not ok then
+                            state.audioBuffer = decoded
+                            state.streamPhase = "waiting_buffer"
+                        end
+                    else
+                        sleep(math.max(#raw * 8 / 48000 - 0.05, 0))
+                    end
+                end
+            end
+        end
+
+        if state.streamPhase == "song_ended" then
+            state.streamPhase = "idle"
+            if state.isLooping and state.nowPlaying then
+                playSong(state.nowPlaying)
+            else
+                skipToNext()
+            end
+            os.queueEvent("sx_music_redraw")
+        end
+    end
+end
+
+local function httpEventLoop()
+    while true do
+        local event, p1, p2 = os.pullEvent()
+
+        if event == "speaker_audio_empty" and state.streamPhase == "waiting_buffer" then
+            if state.audioBuffer then
+                local ok = true
+                for _, s in ipairs(localSpeakers) do
+                    if not s.playAudio(state.audioBuffer) then ok = false end
+                end
+                if ok then
+                    state.audioBuffer = nil
+                    state.streamPhase = "streaming"
+                end
+            else
+                state.streamPhase = "streaming"
+            end
+        end
+
+        if event == "http_success" then
+            local url, handle = p1, p2
+
+            if url == state.pendingDownloadUrl then
+                local tag = handle.read(4)
+                if tag == "RIFF" then
+                    handle.close()
+                    skipToNext()
+                else
+                    state.playerHandle = handle
+                    state.headerRemainder = tag
+                    state.chunkSize = 16 * 1024 - 4
+                    state.dfpwmDecoder = dfpwm.make_decoder()
+                    state.streamPhase = "streaming"
+                end
+                os.queueEvent("sx_music_redraw")
+            elseif url == state.pendingSearchUrl then
+                local raw = textutils.unserialiseJSON(handle.readAll())
+                handle.close()
+                if raw and #raw > 1 then table.remove(raw, 1) end
+                state.searchResults = raw or {}
+                os.queueEvent("sx_music_redraw")
+            elseif url == state.pendingFeaturedUrl then
+                local raw = textutils.unserialiseJSON(handle.readAll())
+                handle.close()
+                for _, track in ipairs(raw or {}) do
+                    track.name = track.title
+                end
+                state.featuredList = raw or {}
+                os.queueEvent("sx_music_redraw")
+            elseif url == state.pendingRelatedUrl then
+                local raw = textutils.unserialiseJSON(handle.readAll())
+                handle.close()
+                for _, track in ipairs(raw or {}) do
+                    track.name = track.title
+                    if not songInQueue(track) then
+                        table.insert(state.queue, track)
+                    end
+                end
+                os.queueEvent("sx_music_redraw")
+            end
+        end
+
+        if event == "http_failure" then
+            local url = p1
+            if url == state.pendingDownloadUrl then
+                skipToNext()
+                os.queueEvent("sx_music_redraw")
+            elseif url == state.pendingSearchUrl then
+                state.searchResults = {}
+                os.queueEvent("sx_music_redraw")
+            end
+        end
+    end
+end
+
+local function rednetLoop()
+    if not modem then
+        while true do sleep(9999) end
+    end
+    while true do
+        local senderId, message = rednet.receive(REDNET_PROTOCOL)
+        if type(message) == "table" then
+            if message.type == "register" then
+                state.speakerNodes[senderId] = os.clock()
+                os.queueEvent("sx_music_redraw")
+            elseif message.type == "pong" then
+                state.speakerNodes[senderId] = os.clock()
+            end
+        end
+    end
+end
+
+-- CLI DRAWING
+local function printCentered(y, text)
+    local w, h = term.getSize()
+    local x = math.floor((w - #text) / 2) + 1
+    term.setCursorPos(x, y)
+    term.write(text)
+end
+
+local function drawHome()
+    local w, h = term.getSize()
+    term.clear()
+
+    local cy = math.floor(h / 2)
+
+    if state.nowPlaying then
+        printCentered(cy - 4, "NOW PLAYING")
+        printCentered(cy - 2, truncate(state.nowPlaying.name or state.nowPlaying.title or "Unknown", w - 2))
+        printCentered(cy - 1, truncate(state.nowPlaying.artist or "Unknown Artist", w - 2))
+
+        local status = state.isPlaying and "Playing" or "Paused"
+        if state.streamPhase == "fetching" or state.streamPhase == "waiting_buffer" then
+            status = "Buffering..."
+        end
+        printCentered(cy + 1, "[" .. status .. "]")
+
+        local elapsed = 0
+        if state.isPlaying then
+            elapsed = os.clock() - songStartTime
+        end
+        if elapsed > songDuration then elapsed = songDuration end
+
+        local timeStr = formatTime(elapsed) .. " / " .. formatTime(songDuration)
+        printCentered(cy + 2, timeStr)
+
+        local barWidth = w - 4
+        if barWidth > 0 then
+            local progress = elapsed / songDuration
+            local filled = math.floor(barWidth * progress)
+            if filled > barWidth then filled = barWidth end
+            local bar = "[" .. string.rep("=", filled) .. string.rep(" ", barWidth - filled) .. "]"
+            printCentered(cy + 3, bar)
+        end
+    else
+        printCentered(cy, "SX-Music CLI")
+        printCentered(cy + 1, "Ready to play")
+    end
+
+    term.setCursorPos(1, h - 1)
+    term.write(string.rep("-", w))
+    term.setCursorPos(1, h)
+    term.write(truncate("Space:Play/Pause S:Search N:Next B:Back Q:Queue C:Config X:Exit", w))
+end
+
+local function drawSearch()
+    local w, h = term.getSize()
+    term.clear()
+    term.setCursorPos(1, 1)
+    term.write(truncate("SEARCH RESULTS (Query: " .. state.searchQuery .. ")", w))
+    term.setCursorPos(1, 2)
+    term.write(string.rep("-", w))
+
+    local linesForResults = h - 6
+    if linesForResults < 1 then linesForResults = 1 end
+
+    if not state.searchResults then
+        term.setCursorPos(1, 4)
+        term.write("Searching...")
+    elseif #state.searchResults == 0 then
+        term.setCursorPos(1, 4)
+        term.write("No results found.")
+    else
+        for i = 1, linesForResults do
+            local idx = state.scrollOffset + i
+            if idx > #state.searchResults then break end
+            local song = state.searchResults[idx]
+            term.setCursorPos(1, 2 + i)
+            local line = string.format("%d. %s - %s", idx, song.name or song.title or "", song.artist or "")
+            term.write(truncate(line, w))
+        end
+    end
+
+    term.setCursorPos(1, h - 2)
+    term.write(string.rep("-", w))
+    term.setCursorPos(1, h - 1)
+    term.write("Type index + Enter to play. Up/Dn to scroll. 'q' to cancel")
+    term.setCursorPos(1, h)
+    term.write(truncate("Selection: " .. state.searchSelectionStr .. "_", w))
+end
+
+local function drawQueue()
+    local w, h = term.getSize()
+    term.clear()
+    term.setCursorPos(1, 1)
+    term.write("QUEUE")
+    term.setCursorPos(1, 2)
+    term.write(string.rep("-", w))
+
+    local linesForResults = h - 6
+    if linesForResults < 1 then linesForResults = 1 end
+
+    if #state.queue == 0 then
+        term.setCursorPos(1, 4)
+        term.write("Queue is empty.")
+    else
+        for i = 1, linesForResults do
+            local idx = state.scrollOffset + i
+            if idx > #state.queue then break end
+            local song = state.queue[idx]
+            term.setCursorPos(1, 2 + i)
+            local line = string.format("%d. %s - %s", idx, song.name or song.title or "", song.artist or "")
+            term.write(truncate(line, w))
+        end
+    end
+
+    term.setCursorPos(1, h - 2)
+    term.write(string.rep("-", w))
+    term.setCursorPos(1, h - 1)
+    term.write("Type index + Enter to play. Up/Dn to scroll. 'q' to cancel")
+    term.setCursorPos(1, h)
+    term.write(truncate("Selection: " .. state.queueSelectionStr .. "_", w))
+end
+
+local function drawConfig()
+    local w, h = term.getSize()
+    term.clear()
+    local cy = math.floor(h / 2) - 2
+    printCentered(cy, "CONFIG MENU")
+    printCentered(cy + 2, "Looping: " .. tostring(state.isLooping))
+    printCentered(cy + 3, "Nodes: " .. nodeCount())
+
+    term.setCursorPos(1, h - 1)
+    term.write(string.rep("-", w))
+    term.setCursorPos(1, h)
+    term.write(truncate("'l' to toggle Loop, 'q' to return Home", w))
+end
+
+local function drawAll()
+    if state.menu == "home" then
+        drawHome()
+    elseif state.menu == "search" then
+        drawSearch()
+    elseif state.menu == "queue" then
+        drawQueue()
+    elseif state.menu == "config" then
+        drawConfig()
+    end
+end
+
+local function doSearchPrompt()
+    term.clear()
+    local w, h = term.getSize()
+    local cy = math.floor(h / 2)
+    printCentered(cy, "Enter search query:")
+    term.setCursorPos(math.floor(w / 4), cy + 1)
+    term.write("> ")
+    local query = read()
+    if query and #query > 0 then
+        searchYoutube(query)
+        state.menu = "search"
+        state.scrollOffset = 0
+        state.searchSelectionStr = ""
+    else
+        state.menu = "home"
+    end
+    os.queueEvent("sx_music_redraw")
+end
+
+local running = true
+
+local function inputLoop()
+    while running do
+        local e, p1 = os.pullEvent()
+        if e == "char" then
+            local c = p1:lower()
+            if state.menu == "home" then
+                if c == "s" then
+                    doSearchPrompt()
+                elseif c == "n" then
+                    skipToNext(); os.queueEvent("sx_music_redraw")
+                elseif c == "b" then
+                    skipToPrevious(); os.queueEvent("sx_music_redraw")
+                elseif c == "q" then
+                    state.menu = "queue"
+                    state.scrollOffset = 0
+                    state.queueSelectionStr = ""
+                    os.queueEvent("sx_music_redraw")
+                elseif c == "c" then
+                    state.menu = "config"
+                    os.queueEvent("sx_music_redraw")
+                elseif c == "x" then
+                    running = false
+                end
+            elseif state.menu == "search" then
+                if c == "q" then
+                    state.menu = "home"
+                    os.queueEvent("sx_music_redraw")
+                elseif tonumber(c) then
+                    state.searchSelectionStr = state.searchSelectionStr .. c
+                    os.queueEvent("sx_music_redraw")
+                end
+            elseif state.menu == "queue" then
+                if c == "q" then
+                    state.menu = "home"
+                    os.queueEvent("sx_music_redraw")
+                elseif tonumber(c) then
+                    state.queueSelectionStr = state.queueSelectionStr .. c
+                    os.queueEvent("sx_music_redraw")
+                end
+            elseif state.menu == "config" then
+                if c == "q" or c == "x" then
+                    state.menu = "home"
+                    os.queueEvent("sx_music_redraw")
+                elseif c == "l" then
+                    toggleLoop()
+                    os.queueEvent("sx_music_redraw")
+                end
+            end
+        elseif e == "key" then
+            if state.menu == "home" then
+                if p1 == keys.space then
+                    togglePlayPause()
+                    os.queueEvent("sx_music_redraw")
+                end
+            elseif state.menu == "search" then
+                if p1 == keys.backspace then
+                    if #state.searchSelectionStr > 0 then
+                        state.searchSelectionStr = state.searchSelectionStr:sub(1, -2)
+                        os.queueEvent("sx_music_redraw")
+                    end
+                elseif p1 == keys.enter then
+                    local idx = tonumber(state.searchSelectionStr)
+                    if idx and state.searchResults and state.searchResults[idx] then
+                        playSong(state.searchResults[idx])
+                        state.menu = "home"
+                    end
+                    state.searchSelectionStr = ""
+                    os.queueEvent("sx_music_redraw")
+                elseif p1 == keys.up then
+                    state.scrollOffset = math.max(0, state.scrollOffset - 1)
+                    os.queueEvent("sx_music_redraw")
+                elseif p1 == keys.down then
+                    local _, h = term.getSize()
+                    local maxLines = h - 6
+                    if maxLines < 1 then maxLines = 1 end
+                    if state.searchResults and state.scrollOffset + maxLines < #state.searchResults then
+                        state.scrollOffset = state.scrollOffset + 1
+                    end
+                    os.queueEvent("sx_music_redraw")
+                end
+            elseif state.menu == "queue" then
+                if p1 == keys.backspace then
+                    if #state.queueSelectionStr > 0 then
+                        state.queueSelectionStr = state.queueSelectionStr:sub(1, -2)
+                        os.queueEvent("sx_music_redraw")
+                    end
+                elseif p1 == keys.enter then
+                    local idx = tonumber(state.queueSelectionStr)
+                    if idx and state.queue and state.queue[idx] then
+                        playSong(table.remove(state.queue, idx))
+                        state.menu = "home"
+                    end
+                    state.queueSelectionStr = ""
+                    os.queueEvent("sx_music_redraw")
+                elseif p1 == keys.up then
+                    state.scrollOffset = math.max(0, state.scrollOffset - 1)
+                    os.queueEvent("sx_music_redraw")
+                elseif p1 == keys.down then
+                    local _, h = term.getSize()
+                    local maxLines = h - 6
+                    if maxLines < 1 then maxLines = 1 end
+                    if state.scrollOffset + maxLines < #state.queue then
+                        state.scrollOffset = state.scrollOffset + 1
+                    end
+                    os.queueEvent("sx_music_redraw")
+                end
+            end
+        end
+    end
+end
+
+local function redrawLoop()
+    while running do
+        drawAll()
+        local ev = { os.pullEvent() }
+        while ev[1] ~= "sx_music_redraw" and running do
+            ev = { os.pullEvent() }
+        end
+    end
+end
+
+local function progressLoop()
+    while running do
+        sleep(1)
+        if state.isPlaying then
+            os.queueEvent("sx_music_redraw")
+        end
+    end
+end
+
+local ok, err = pcall(function()
+    parallel.waitForAny(audioLoop, httpEventLoop, rednetLoop, inputLoop, redrawLoop, progressLoop)
+end)
+
+term.clear()
+term.setCursorPos(1, 1)
+
+if not ok then
+    print("SX-Music CLI stopped: " .. tostring(err))
+end
+speaker_node.lua
+7570
+-- speaker_node.lua
+-- Runs on any computer with a speaker + modem.
+-- Connects to the main SX-Music computer over rednet and plays
+-- whatever the main computer is streaming, at the same time.
+--
+-- Setup:
+--   1. Attach a speaker and a wireless modem to this computer.
+--   2. Run: lua /SX-Music/speaker_node.lua
+--      (or add it to startup.lua for auto-start)
+
+local dfpwm              = require("cc.audio.dfpwm")
+
+local REDNET_PROTOCOL    = "sx-music"
+local HEARTBEAT_INTERVAL = 30
+
+local modem              = peripheral.find("modem")
+local speaker            = peripheral.find("speaker")
+
+if not modem then error("A modem is required. Attach one and restart.", 0) end
+if not speaker then error("A speaker is required. Attach one and restart.", 0) end
+
+rednet.open(peripheral.getName(modem))
+
+-- Per-node stream state, mirrors the main computer's audio state machine
+local stream = {
+    phase           = "idle",
+    playerHandle    = nil,
+    dfpwmDecoder    = nil,
+    audioBuffer     = nil,
+    chunkSize       = 16 * 1024 - 4,
+    headerRemainder = nil,
+    pendingUrl      = nil,
+    name            = nil,
+    artist          = nil,
+}
+
+local function drawStatus()
+    term.clear()
+    local w, h = term.getSize()
+    local cy = math.floor(h / 2)
+    local function printCentered(y, txt)
+        if not txt then return end
+        local tx = math.floor((w - #tostring(txt)) / 2) + 1
+        term.setCursorPos(tx, y)
+        term.write(tostring(txt))
+    end
+    printCentered(cy - 2, "SX-Music Node")
+    printCentered(cy, "[" .. stream.phase .. "]")
+    if stream.name then printCentered(cy + 2, stream.name) end
+    if stream.artist then printCentered(cy + 3, stream.artist) end
+end
+
+local function resetStream()
+    stream.phase           = "idle"
+    stream.playerHandle    = nil
+    stream.dfpwmDecoder    = nil
+    stream.audioBuffer     = nil
+    stream.chunkSize       = 16 * 1024 - 4
+    stream.headerRemainder = nil
+    stream.pendingUrl      = nil
+    speaker.stop()
+end
+
+local function startStream(url, name, artist)
+    resetStream()
+    stream.phase      = "fetching"
+    stream.pendingUrl = url
+    stream.name       = name
+    stream.artist     = artist
+    http.request({ url = url, binary = true })
+    drawStatus()
+end
+
+local function audioLoop()
+    while true do
+        sleep(0.05)
+
+        if stream.phase == "streaming" then
+            if stream.audioBuffer then
+                if speaker.playAudio(stream.audioBuffer) then
+                    stream.audioBuffer = nil
+                else
+                    stream.phase = "waiting_buffer"
+                end
+            end
+
+            if stream.phase == "streaming" and not stream.audioBuffer then
+                local rawChunk = stream.playerHandle.read(stream.chunkSize)
+
+                if not rawChunk then
+                    stream.playerHandle.close()
+                    stream.playerHandle = nil
+                    stream.phase = "idle"
+                    drawStatus()
+                else
+                    if stream.headerRemainder then
+                        rawChunk               = stream.headerRemainder .. rawChunk
+                        stream.headerRemainder = nil
+                        stream.chunkSize       = 16 * 1024
+                    end
+
+                    local decoded = stream.dfpwmDecoder(rawChunk)
+                    if not speaker.playAudio(decoded) then
+                        stream.audioBuffer = decoded
+                        stream.phase       = "waiting_buffer"
+                    end
+                end
+            end
+        end
+    end
+end
+
+local seenMessages = {}
+
+local function eventLoop()
+    while true do
+        -- Clean up old seen messages randomly to prevent memory leaks
+        if math.random(1, 100) == 1 then
+            local now = os.clock()
+            for id, time in pairs(seenMessages) do
+                if now - time > 60 then
+                    seenMessages[id] = nil
+                end
+            end
+        end
+
+        local event, p1, p2 = os.pullEvent()
+
+        if event == "speaker_audio_empty" and stream.phase == "waiting_buffer" then
+            if stream.audioBuffer then
+                if speaker.playAudio(stream.audioBuffer) then
+                    stream.audioBuffer = nil
+                    stream.phase       = "streaming"
+                end
+            else
+                stream.phase = "streaming"
+            end
+        end
+
+        if event == "http_success" and stream.phase == "fetching" and p1 == stream.pendingUrl then
+            local tag = p2.read(4)
+            if tag == "RIFF" then
+                p2.close()
+                stream.phase = "idle"
+            else
+                stream.playerHandle    = p2
+                stream.headerRemainder = tag
+                stream.chunkSize       = 16 * 1024 - 4
+                stream.dfpwmDecoder    = dfpwm.make_decoder()
+                stream.phase           = "streaming"
+            end
+            drawStatus()
+        end
+
+        if event == "http_failure" and stream.phase == "fetching" then
+            stream.phase = "idle"
+            drawStatus()
+        end
+
+        if event == "rednet_message" then
+            local senderId, message = p1, p2
+            if type(message) == "table" then
+                -- Message Deduplication for Relay
+                local sig = message.msgID
+                if not sig then
+                    sig = tostring(message.type or "unknown") .. tostring(message.url or "") .. tostring(senderId)
+                end
+
+                if seenMessages[sig] then
+                    -- Already processed this broadcast
+                else
+                    seenMessages[sig] = os.clock()
+
+                    -- Relay it forward to other distant nodes
+                    rednet.broadcast(message, REDNET_PROTOCOL)
+
+                    if message.type == "play" and type(message.url) == "string" then
+                        startStream(message.url, message.name, message.artist)
+                    elseif message.type == "stop" then
+                        resetStream()
+                    elseif message.type == "ping" then
+                        rednet.send(senderId, { type = "pong" }, REDNET_PROTOCOL)
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Periodically re-registers with the host so the main computer keeps this
+-- node in its active list even after a host restart.
+local function heartbeatLoop()
+    while true do
+        local hostId = rednet.lookup(REDNET_PROTOCOL, "sx-music-host")
+        local msg = {
+            type = "register",
+            originalNode = os.getComputerID(),
+            msgID = os.getComputerID() .. "_reg_" .. tostring(os.clock())
+        }
+
+        if hostId then
+            rednet.send(hostId, msg, REDNET_PROTOCOL)
+        else
+            -- If host is far away, broadcast so other nodes relay it
+            rednet.broadcast(msg, REDNET_PROTOCOL)
+        end
+        sleep(HEARTBEAT_INTERVAL)
+    end
+end
+
+-- Initial registration attempt
+local hostId = rednet.lookup(REDNET_PROTOCOL, "sx-music-host")
+local initMsg = {
+    type = "register",
+    originalNode = os.getComputerID(),
+    msgID = os.getComputerID() .. "_reg_" .. tostring(os.clock())
+}
+
+if hostId then
+    print("Connected to SX-Music host " .. hostId)
+    rednet.send(hostId, initMsg, REDNET_PROTOCOL)
+else
+    print("Host not found directly. Broadcasting register via relays.")
+    rednet.broadcast(initMsg, REDNET_PROTOCOL)
+end
+
+drawStatus()
+parallel.waitForAny(audioLoop, eventLoop, heartbeatLoop)
+scripts/post_install.lua
+510
+-- scripts/post_install.lua
+-- SX-Music post-install hook, run by sxpm after all files are extracted.
+-- Writes the default playback preference file if none exists yet.
+
+local pref_file = "/.sxmusic_pref"
+
+if not fs.exists(pref_file) then
+    local f = fs.open(pref_file, "w")
+    if f then
+        -- "auto" means: GUI on colour terminals, CLI on monochrome.
+        f.write("auto")
+        f.close()
+    end
+end
+
+print("  SX-Music: default mode set to 'auto'. Edit /.sxmusic_pref to change (gui/cli/auto).")
+manifest.lua
+1074
+-- manifest.lua
+-- Package manifest for sxmusic.
+-- Consumed by sxpm to install, upgrade, and remove SX-Music.
+
+return {
+    format = "sxpkg-1",
+
+    meta = {
+        name        = "sxmusic",
+        version     = "1.0.0",
+        author      = "SwirX",
+        description = "High-quality networked audio streaming application for CC:Tweaked.",
+        channel     = "stable",
+    },
+
+    dependencies = { "sxui" },
+
+    files = {
+        -- Entry point binary (maps to `music` command in shell)
+        { path = "/usr/bin/music.lua",            source = "music.lua",       executable = true },
+
+        -- Application libraries
+        { path = "/lib/sxmusic/gui.lua",          source = "gui.lua" },
+        { path = "/lib/sxmusic/cli.lua",          source = "cli.lua" },
+
+        -- Speaker node (separate role; installed alongside for completeness)
+        { path = "/lib/sxmusic/speaker_node.lua", source = "speaker_node.lua" },
+    },
+
+    lifecycle = {
+        post_install = "scripts/post_install.lua",
+    },
+
+    integrity = {
+        sha256 = "FILL_ME",
+    },
+}

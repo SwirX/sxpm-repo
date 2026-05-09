@@ -1,0 +1,1531 @@
+SXP1
+ui.lua
+950
+-- Auto-inject package path so the framework loads internal modules without touching startup.lua
+local libPath = "/lib/sxui/?.lua"
+if not package.path:find(libPath, 1, true) then
+    package.path = package.path .. ";" .. libPath
+end
+
+local _VERSION = "2.2.0"
+
+local UI = {
+    _VERSION = _VERSION,
+    Screen = require("core.screen"),
+    Element = require("core.element"),
+    Animator = require("core.animator"),
+    Frame = require("widgets.frame"),
+    AppWindow = require("widgets.appwindow"),
+    Button = require("widgets.button"),
+    Label = require("widgets.label"),
+    Input = require("widgets.input"),
+    Checkbox = require("widgets.checkbox"),
+    Slider = require("widgets.slider"),
+    Multiline = require("widgets.multiline"),
+    TextEdit = require("widgets.textedit"),
+    ScrollPanel = require("widgets.scrollpanel"),
+    Dropdown = require("widgets.dropdown"),
+    ColorSelector = require("widgets.colorselector"),
+}
+
+return UI
+core/class.lua
+419
+local function class(superclass)
+    local Type = {}
+
+    Type.__index = Type
+
+    local meta = {}
+    if superclass then
+        meta.__index = superclass
+    end
+
+    meta.__call = function(self, ...)
+        local instance = setmetatable({}, Type)
+        if instance.new then
+            instance:new(...)
+        end
+        return instance
+    end
+
+    setmetatable(Type, meta)
+
+    return Type
+end
+
+return class
+core/animator.lua
+2590
+local Easing = {
+    Linear = function(t, b, c, d) return c * t / d + b end,
+    SineIn = function(t, b, c, d) return -c * math.cos(t / d * (math.pi / 2)) + c + b end,
+    SineOut = function(t, b, c, d) return c * math.sin(t / d * (math.pi / 2)) + b end,
+    SineInOut = function(t, b, c, d) return -c / 2 * (math.cos(math.pi * t / d) - 1) + b end,
+    CubicIn = function(t, b, c, d) t = t / d; return c * math.pow(t, 3) + b end,
+    CubicOut = function(t, b, c, d) t = t / d - 1; return c * (math.pow(t, 3) + 1) + b end,
+    CubicInOut = function(t, b, c, d) t = t / (d / 2); if t < 1 then return c / 2 * math.pow(t, 3) + b end; t = t - 2; return c / 2 * (math.pow(t, 3) + 2) + b end,
+    ExpoIn = function(t, b, c, d) return t == 0 and b or c * math.pow(2, 10 * (t / d - 1)) + b - c * 0.001 end,
+    ExpoOut = function(t, b, c, d) return t == d and b + c or c * 1.001 * (-math.pow(2, -10 * t / d) + 1) + b end,
+    ExpoInOut = function(t, b, c, d)
+        if t == 0 then return b end
+        if t == d then return b + c end
+        t = t / (d / 2)
+        if t < 1 then return c / 2 * math.pow(2, 10 * (t - 1)) + b - c * 0.0005 end
+        t = t - 1
+        return c / 2 * 1.0005 * (-math.pow(2, -10 * t) + 2) + b
+    end,
+}
+
+local Animator = {}
+Animator.Easing = Easing
+Animator.activeAnimations = {}
+
+function Animator.animate(startVal, endVal, duration, easingFunc, onUpdate, onComplete)
+    local anim = {
+        startVal = startVal,
+        change = endVal - startVal,
+        duration = duration,
+        easingFunc = easingFunc or Easing.Linear,
+        onUpdate = onUpdate,
+        onComplete = onComplete,
+        startTime = os.clock()
+    }
+    table.insert(Animator.activeAnimations, anim)
+    return anim
+end
+
+function Animator.tick(currentTime)
+    if #Animator.activeAnimations == 0 then return false end
+    
+    local completed = {}
+    for i, anim in ipairs(Animator.activeAnimations) do
+        local elapsed = currentTime - anim.startTime
+        if elapsed >= anim.duration then
+            if anim.onUpdate then anim.onUpdate(anim.startVal + anim.change) end
+            if anim.onComplete then anim.onComplete() end
+            table.insert(completed, i)
+        else
+            local val = anim.easingFunc(elapsed, anim.startVal, anim.change, anim.duration)
+            if anim.onUpdate then anim.onUpdate(val) end
+        end
+    end
+    
+    for i = #completed, 1, -1 do
+        table.remove(Animator.activeAnimations, completed[i])
+    end
+    
+    return true
+end
+
+function Animator.hasActive()
+    return #Animator.activeAnimations > 0
+end
+
+return Animator
+core/element.lua
+6272
+local class = require("core.class")
+
+local Element = class()
+
+function Element:new()
+    self.position = { scaleX = 0, offsetX = 1, scaleY = 0, offsetY = 1 }
+    self.size = { scaleX = 0, offsetX = 10, scaleY = 0, offsetY = 1 }
+    -- "relative" resolves against parent bounds, "absolute" resolves against the screen root
+    self.positionType = "relative"
+
+    self.backgroundColor = colors.black
+    self.foregroundColor = colors.white
+    self.zIndex = 1
+    self.visible = true
+
+    self.draggable = false
+    self.resizable = false
+
+    self.parent = nil
+    self.children = {}
+
+    self.onClick = nil
+    self.onRightClick = nil
+    self.onMiddleClick = nil
+    self.onHover = nil
+    self.onLeave = nil
+    self.onDrag = nil
+    self.onScroll = nil
+    self.onKey = nil
+    self.onChar = nil
+
+    self._isHovered = false
+    self._isDragging = false
+    self._dragOffsetX = 0
+    self._dragOffsetY = 0
+end
+
+function Element:getAbsoluteSize()
+    if not self.parent then
+        return self.size.offsetX, self.size.offsetY
+    end
+    local pW, pH = self.parent:getAbsoluteSize()
+    local w = math.floor(pW * self.size.scaleX + self.size.offsetX)
+    local h = math.floor(pH * self.size.scaleY + self.size.offsetY)
+    return w, h
+end
+
+function Element:getAbsolutePosition()
+    if self.positionType == "absolute" or not self.parent then
+        return math.floor(self.position.offsetX), math.floor(self.position.offsetY)
+    end
+    local pX, pY = self.parent:getAbsolutePosition()
+    local pW, pH = self.parent:getAbsoluteSize()
+    local x = pX + math.floor(pW * self.position.scaleX + self.position.offsetX)
+    local y = pY + math.floor(pH * self.position.scaleY + self.position.offsetY)
+    return x, y
+end
+
+function Element:addChild(child)
+    table.insert(self.children, child)
+    child.parent = self
+end
+
+function Element:removeChild(child)
+    for i, c in ipairs(self.children) do
+        if c == child then
+            table.remove(self.children, i)
+            child.parent = nil
+            break
+        end
+    end
+end
+
+function Element:draw(renderTarget)
+    if not self.visible then return end
+
+    local x, y = self:getAbsolutePosition()
+    local w, h = self:getAbsoluteSize()
+
+    if self.backgroundColor and w > 0 and h > 0 then
+        renderTarget.setBackgroundColor(self.backgroundColor)
+        for dy = 0, h - 1 do
+            renderTarget.setCursorPos(x, y + dy)
+            renderTarget.write(string.rep(" ", w))
+        end
+    end
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+
+    for _, c in ipairs(sortedChildren) do
+        c:draw(renderTarget)
+    end
+end
+
+function Element:hitTest(cx, cy)
+    local x, y = self:getAbsolutePosition()
+    local w, h = self:getAbsoluteSize()
+    return cx >= x and cx < x + w and cy >= y and cy < y + h
+end
+
+function Element:handleEvent(event, p1, p2, p3)
+    if not self.visible then return false end
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    -- Highest zIndex gets the event first
+    table.sort(sortedChildren, function(a, b) return a.zIndex > b.zIndex end)
+
+    for _, c in ipairs(sortedChildren) do
+        if c:handleEvent(event, p1, p2, p3) then
+            return true
+        end
+    end
+
+    if event == "mouse_click" or event == "monitor_touch" then
+        local button, cx, cy = p1, p2, p3
+        if event == "monitor_touch" then button, cx, cy = 1, p1, p2 end
+
+        if self:hitTest(cx, cy) then
+            if self.draggable and button == 1 then
+                self._isDragging = true
+                local myX, myY = self:getAbsolutePosition()
+                self._dragOffsetX = cx - myX
+                self._dragOffsetY = cy - myY
+            end
+
+            if button == 1 and self.onClick then self.onClick(self, cx, cy) end
+            if button == 2 and self.onRightClick then self.onRightClick(self, cx, cy) end
+            if button == 3 and self.onMiddleClick then self.onMiddleClick(self, cx, cy) end
+
+            return true
+        end
+        if self._isHovered then
+            self._isHovered = false
+            if self.onLeave then self.onLeave(self, cx, cy) end
+        end
+    elseif event == "mouse_drag" then
+        local _, cx, cy = p1, p2, p3
+        if self._isDragging then
+            local newAbsX = cx - self._dragOffsetX
+            local newAbsY = cy - self._dragOffsetY
+
+            if self.positionType == "relative" and self.parent then
+                local pX, pY = self.parent:getAbsolutePosition()
+                local pW, pH = self.parent:getAbsoluteSize()
+                self.position.offsetX = newAbsX - pX - math.floor(pW * self.position.scaleX)
+                self.position.offsetY = newAbsY - pY - math.floor(pH * self.position.scaleY)
+            else
+                self.position.offsetX = newAbsX - math.floor(self.position.scaleX)
+                self.position.offsetY = newAbsY - math.floor(self.position.scaleY)
+            end
+
+            if self.onDrag then self.onDrag(self, cx, cy) end
+            return true
+        end
+    elseif event == "mouse_up" then
+        if self._isDragging then
+            self._isDragging = false
+            return true
+        end
+    elseif event == "mouse_scroll" then
+        local dir, cx, cy = p1, p2, p3
+        if self:hitTest(cx, cy) then
+            if self.onScroll then self.onScroll(self, dir, cx, cy) end
+            return true
+        end
+    elseif event == "mouse_move" then
+        -- mouse_move is a synthetic event fired by Screen on every interaction
+        local cx, cy = p1, p2
+        local hit = self:hitTest(cx, cy)
+        if hit and not self._isHovered then
+            self._isHovered = true
+            if self.onHover then self.onHover(self, cx, cy) end
+        elseif not hit and self._isHovered then
+            self._isHovered = false
+            if self.onLeave then self.onLeave(self, cx, cy) end
+        end
+    end
+
+    if event == "key" and self.onKey then
+        return self.onKey(self, p1, p2)
+    end
+    if event == "char" and self.onChar then
+        return self.onChar(self, p1)
+    end
+
+    return false
+end
+
+return Element
+core/screen.lua
+2522
+local class = require("core.class")
+local Element = require("core.element")
+local Animator = require("core.animator")
+
+local Screen = class(Element)
+
+function Screen:new(target)
+    Element.new(self)
+    self.target = target or term.current()
+    if self.target.getSize then
+        local tw, th = self.target.getSize()
+        self.size = { scaleX = 0, offsetX = tw, scaleY = 0, offsetY = th }
+    end
+    self.position = { scaleX = 0, offsetX = 1, scaleY = 0, offsetY = 1 }
+end
+
+function Screen:draw()
+    if not self.visible then return end
+
+    self.target.setBackgroundColor(self.backgroundColor)
+    self.target.clear()
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+
+    for _, c in ipairs(sortedChildren) do
+        c:draw(self.target)
+    end
+end
+
+function Screen:run()
+    self.running = true
+    self:draw()
+
+    local animTimer = nil
+    if Animator.hasActive() then
+        animTimer = os.startTimer(0.05)
+    end
+
+    while self.running do
+        local eventData = { os.pullEvent() }
+        local event = eventData[1]
+
+        if event == "timer" and eventData[2] == animTimer then
+            if Animator.tick(os.clock()) then
+                animTimer = os.startTimer(0.05)
+            end
+            self:draw()
+        else
+            if Animator.hasActive() and not animTimer then
+                animTimer = os.startTimer(0.05)
+            end
+        end
+
+        -- mouse_move is synthetic: we fire it before the real event so hover state is current
+        if event == "mouse_click" or event == "mouse_drag" then
+            self:handleEvent("mouse_move", eventData[3], eventData[4])
+        elseif event == "monitor_touch" then
+            self:handleEvent("mouse_move", eventData[2], eventData[3])
+        end
+
+        self:handleEvent(table.unpack(eventData))
+
+        if event == "mouse_click" or event == "mouse_drag" or event == "monitor_touch"
+            or event == "key" or event == "char" or event == "mouse_up" or event == "mouse_scroll" then
+            self:draw()
+        end
+    end
+end
+
+function Screen:stop()
+    self.running = false
+    -- Leaving the cursor at the bottom means the shell prompt won't paint over the last UI row
+    self.target.setBackgroundColor(colors.black)
+    self.target.setTextColor(colors.white)
+    self.target.clear()
+    self.target.setCursorPos(1, 1)
+    self.target.setCursorBlink(false)
+end
+
+return Screen
+widgets/frame.lua
+212
+local class = require("core.class")
+local Element = require("core.element")
+
+local Frame = class(Element)
+
+function Frame:new()
+    Element.new(self)
+    self.backgroundColor = colors.lightGray
+end
+
+return Frame
+widgets/appwindow.lua
+3582
+local class = require("core.class")
+local Element = require("core.element")
+
+-- We handle drag exclusively from the titlebar rather than the whole frame body,
+-- so draggable is intentionally left false on the base Element.
+local AppWindow = class(Element)
+
+function AppWindow:new(title)
+    Element.new(self)
+    self.title = title or "Window"
+    self.titlebarHeight = 1
+    self.backgroundColor = colors.lightGray
+    self.titlebarColor = colors.blue
+    self.titlebarTextColor = colors.white
+    self.size.offsetX = 30
+    self.size.offsetY = 15
+
+    self._titleDragging = false
+    self._titleDragOffsetX = 0
+    self._titleDragOffsetY = 0
+end
+
+function AppWindow:handleEvent(event, p1, p2, p3)
+    if not self.visible then return false end
+
+    local myX, myY = self:getAbsolutePosition()
+    local myW, _ = self:getAbsoluteSize()
+
+    if event == "mouse_click" or event == "monitor_touch" then
+        local btn, cx, cy = p1, p2, p3
+        if event == "monitor_touch" then
+            btn = 1; cx = p1; cy = p2;
+        end
+
+        if btn == 1 and cx >= myX and cx < myX + myW and cy == myY then
+            self._titleDragging = true
+            self._titleDragOffsetX = cx - myX
+            self._titleDragOffsetY = cy - myY
+            if self.parent then
+                local maxZ = 0
+                for _, sibling in ipairs(self.parent.children) do
+                    if sibling ~= self and sibling.zIndex > maxZ then
+                        maxZ = sibling.zIndex
+                    end
+                end
+                self.zIndex = maxZ + 1
+            end
+        end
+    elseif event == "mouse_drag" then
+        local _, cx, cy = p1, p2, p3
+        if self._titleDragging then
+            local newAbsX = cx - self._titleDragOffsetX
+            local newAbsY = cy - self._titleDragOffsetY
+            if self.positionType == "relative" and self.parent then
+                local pX, pY = self.parent:getAbsolutePosition()
+                local pW, pH = self.parent:getAbsoluteSize()
+                self.position.offsetX = newAbsX - pX - math.floor(pW * self.position.scaleX)
+                self.position.offsetY = newAbsY - pY - math.floor(pH * self.position.scaleY)
+            else
+                self.position.offsetX = newAbsX
+                self.position.offsetY = newAbsY
+            end
+            return true
+        end
+    elseif event == "mouse_up" then
+        if self._titleDragging then
+            self._titleDragging = false
+        end
+    end
+
+    return Element.handleEvent(self, event, p1, p2, p3)
+end
+
+function AppWindow:draw(renderTarget)
+    if not self.visible then return end
+
+    local x, y = self:getAbsolutePosition()
+    local w, h = self:getAbsoluteSize()
+
+    renderTarget.setBackgroundColor(self.backgroundColor)
+    for dy = 1, h - 1 do
+        renderTarget.setCursorPos(x, y + dy)
+        renderTarget.write(string.rep(" ", w))
+    end
+
+    renderTarget.setBackgroundColor(self.titlebarColor)
+    renderTarget.setCursorPos(x, y)
+    renderTarget.write(string.rep(" ", w))
+
+    local txt = tostring(self.title)
+    if #txt > w - 2 then txt = string.sub(txt, 1, w - 2) end
+    local drawX = x + math.floor((w - #txt) / 2)
+    renderTarget.setCursorPos(drawX, y)
+    renderTarget.setTextColor(self.titlebarTextColor)
+    renderTarget.write(txt)
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+    for _, c in ipairs(sortedChildren) do c:draw(renderTarget) end
+end
+
+return AppWindow
+widgets/button.lua
+2269
+local class = require("core.class")
+local Element = require("core.element")
+
+local Button = class(Element)
+
+function Button:new(text)
+    Element.new(self)
+    self.text = text or "Button"
+    self.align = "center"
+    self.backgroundColor = colors.gray
+    self.foregroundColor = colors.white
+    self.pressedColor = colors.lightGray
+    self._isPressed = false
+end
+
+function Button:handleEvent(event, p1, p2, p3)
+    if not self.visible then return false end
+
+    if event == "mouse_click" or event == "monitor_touch" then
+        local btn, cx, cy = p1, p2, p3
+        if event == "monitor_touch" then
+            btn = 1; cx = p1; cy = p2;
+        end
+
+        if self:hitTest(cx, cy) and btn == 1 then
+            self._isPressed = true
+        end
+    elseif event == "mouse_up" then
+        if self._isPressed then
+            self._isPressed = false
+        end
+    elseif event == "mouse_move" then
+        if self._isPressed and not self:hitTest(p1, p2) then
+            self._isPressed = false
+        end
+    end
+
+    return Element.handleEvent(self, event, p1, p2, p3)
+end
+
+function Button:draw(renderTarget)
+    if not self.visible then return end
+
+    local bg = self._isPressed and self.pressedColor or self.backgroundColor
+    local x, y = self:getAbsolutePosition()
+    local w, h = self:getAbsoluteSize()
+
+    if w > 0 and h > 0 then
+        renderTarget.setBackgroundColor(bg)
+        for dy = 0, h - 1 do
+            renderTarget.setCursorPos(x, y + dy)
+            renderTarget.write(string.rep(" ", w))
+        end
+    end
+
+    local txt = tostring(self.text)
+    if #txt > w then txt = string.sub(txt, 1, w) end
+    local drawX = x
+    if self.align == "center" then
+        drawX = x + math.floor((w - #txt) / 2)
+    elseif self.align == "right" then
+        drawX = x + w - #txt
+    end
+
+    local textY = y + math.floor((h - 1) / 2)
+    renderTarget.setCursorPos(drawX, textY)
+    renderTarget.setTextColor(self.foregroundColor)
+    renderTarget.write(txt)
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+
+    for _, c in ipairs(sortedChildren) do
+        c:draw(renderTarget)
+    end
+end
+
+return Button
+widgets/label.lua
+1497
+local class = require("core.class")
+local Element = require("core.element")
+
+local Label = class(Element)
+
+function Label:new(text)
+    Element.new(self)
+    self.text = text or ""
+    self.align = "left"
+    self.backgroundColor = false -- false means transparent
+    self.foregroundColor = colors.white
+end
+
+function Label:draw(renderTarget)
+    if not self.visible then return end
+
+    local x, y = self:getAbsolutePosition()
+    local w, h = self:getAbsoluteSize()
+
+    if self.backgroundColor and w > 0 and h > 0 then
+        renderTarget.setBackgroundColor(self.backgroundColor)
+        for dy = 0, h - 1 do
+            renderTarget.setCursorPos(x, y + dy)
+            renderTarget.write(string.rep(" ", w))
+        end
+    end
+
+    local txt = tostring(self.text)
+    if #txt > w then txt = string.sub(txt, 1, w) end
+    local drawX = x
+    if self.align == "center" then
+        drawX = x + math.floor((w - #txt) / 2)
+    elseif self.align == "right" then
+        drawX = x + w - #txt
+    end
+
+    renderTarget.setCursorPos(drawX, y)
+    if self.backgroundColor then renderTarget.setBackgroundColor(self.backgroundColor) end
+    renderTarget.setTextColor(self.foregroundColor)
+    renderTarget.write(txt)
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+
+    for _, c in ipairs(sortedChildren) do
+        c:draw(renderTarget)
+    end
+end
+
+return Label
+widgets/input.lua
+2735
+local class = require("core.class")
+local Element = require("core.element")
+
+local Input = class(Element)
+
+function Input:new()
+    Element.new(self)
+    self.text = ""
+    self.placeholder = "Type here..."
+    self.isFocused = false
+    self.size.offsetX = 15
+    self.size.offsetY = 1
+    self.backgroundColor = colors.black
+    self.foregroundColor = colors.white
+    self.placeholderColor = colors.gray
+end
+
+function Input:handleEvent(event, p1, p2, p3)
+    if not self.visible then return false end
+
+    if event == "mouse_click" or event == "monitor_touch" then
+        local btn, cx, cy = p1, p2, p3
+        if event == "monitor_touch" then
+            btn = 1; cx = p1; cy = p2;
+        end
+
+        if self:hitTest(cx, cy) then
+            self.isFocused = true
+        else
+            self.isFocused = false
+        end
+    end
+
+    if self.isFocused then
+        if event == "char" then
+            self.text = self.text .. p1
+            return true
+        elseif event == "key" then
+            local key = p1
+            if key == keys.backspace then
+                if #self.text > 0 then
+                    self.text = string.sub(self.text, 1, #self.text - 1)
+                end
+                return true
+            end
+        end
+    end
+
+    return Element.handleEvent(self, event, p1, p2, p3)
+end
+
+function Input:draw(renderTarget)
+    if not self.visible then return end
+
+    local x, y = self:getAbsolutePosition()
+    local w, h = self:getAbsoluteSize()
+
+    if w > 0 and h > 0 then
+        renderTarget.setBackgroundColor(self.backgroundColor)
+        for dy = 0, h - 1 do
+            renderTarget.setCursorPos(x, y + dy)
+            renderTarget.write(string.rep(" ", w))
+        end
+    end
+
+    renderTarget.setCursorPos(x, y)
+
+    local txt = self.text
+    if #txt == 0 and not self.isFocused then
+        renderTarget.setTextColor(self.placeholderColor)
+        local p = self.placeholder
+        if #p > w then p = string.sub(p, 1, w) end
+        renderTarget.write(p)
+    else
+        renderTarget.setTextColor(self.foregroundColor)
+        local displayTxt = txt
+        if #displayTxt > w then
+            displayTxt = string.sub(displayTxt, #displayTxt - w + 1)
+        end
+        renderTarget.write(displayTxt)
+    end
+
+    if self.isFocused and renderTarget.setCursorBlink then
+        local px = x + math.min(#self.text, w - 1)
+        renderTarget.setCursorPos(px, y)
+        renderTarget.setCursorBlink(true)
+    end
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+    for _, c in ipairs(sortedChildren) do c:draw(renderTarget) end
+end
+
+return Input
+widgets/checkbox.lua
+2318
+local class = require("core.class")
+local Element = require("core.element")
+
+local Checkbox = class(Element)
+
+function Checkbox:new(text)
+    Element.new(self)
+    self.text = text or ""
+    self.checked = false
+    self.size.offsetX = #(self.text) + 4
+    self.size.offsetY = 1
+    self.backgroundColor = false
+    self.foregroundColor = colors.white
+    self.checkedColor = colors.lime
+end
+
+function Checkbox:handleEvent(event, p1, p2, p3)
+    if not self.visible then return false end
+
+    -- Consume the built in event propagation
+    local wasHandled = Element.handleEvent(self, event, p1, p2, p3)
+
+    if event == "mouse_click" or event == "monitor_touch" then
+        local btn, cx, cy = p1, p2, p3
+        if event == "monitor_touch" then
+            btn = 1; cx = p1; cy = p2;
+        end
+
+        if self:hitTest(cx, cy) and btn == 1 then
+            self.checked = not self.checked
+            return true
+        end
+    end
+
+    return wasHandled
+end
+
+function Checkbox:draw(renderTarget)
+    if not self.visible then return end
+
+    local x, y = self:getAbsolutePosition()
+    local w, h = self:getAbsoluteSize()
+
+    if self.backgroundColor and w > 0 and h > 0 then
+        renderTarget.setBackgroundColor(self.backgroundColor)
+        for dy = 0, h - 1 do
+            renderTarget.setCursorPos(x, y + dy)
+            renderTarget.write(string.rep(" ", w))
+        end
+    end
+
+    renderTarget.setCursorPos(x, y)
+    if self.backgroundColor then renderTarget.setBackgroundColor(self.backgroundColor) end
+
+    renderTarget.setTextColor(self.foregroundColor)
+    renderTarget.write("[")
+
+    if self.checked then
+        renderTarget.setTextColor(self.checkedColor)
+        renderTarget.write("X")
+    else
+        renderTarget.write(" ")
+    end
+
+    renderTarget.setTextColor(self.foregroundColor)
+    renderTarget.write("] ")
+
+    local txt = tostring(self.text)
+    local avail = w - 4
+    if avail > 0 then
+        if #txt > avail then txt = string.sub(txt, 1, avail) end
+        renderTarget.write(txt)
+    end
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+
+    for _, c in ipairs(sortedChildren) do
+        c:draw(renderTarget)
+    end
+end
+
+return Checkbox
+widgets/slider.lua
+2881
+local class = require("core.class")
+local Element = require("core.element")
+
+local Slider = class(Element)
+
+function Slider:new()
+    Element.new(self)
+    self.size.offsetX = 10
+    self.size.offsetY = 1
+    self.min = 0
+    self.max = 100
+    self.value = 50
+    self.backgroundColor = colors.gray
+    self.foregroundColor = colors.white
+    self.sliderColor = colors.lightBlue
+    self._isDraggingSlider = false
+end
+
+function Slider:setValue(val)
+    self.value = val
+    if self.value < self.min then self.value = self.min end
+    if self.value > self.max then self.value = self.max end
+end
+
+function Slider:updateFromMouse(cx)
+    local x, _ = self:getAbsolutePosition()
+    local w, _ = self:getAbsoluteSize()
+
+    local relX = cx - x
+    local ratio = relX / (w - 1)
+    if ratio < 0 then ratio = 0 end
+    if ratio > 1 then ratio = 1 end
+
+    local oldVal = self.value
+    self.value = self.min + ratio * (self.max - self.min)
+    if oldVal ~= self.value and type(self.onChange) == "function" then
+        self.onChange(self, self.value)
+    end
+end
+
+function Slider:handleEvent(event, p1, p2, p3)
+    if not self.visible then return false end
+
+    if event == "mouse_click" or event == "monitor_touch" then
+        local btn, cx, cy = p1, p2, p3
+        if event == "monitor_touch" then
+            btn = 1; cx = p1; cy = p2;
+        end
+
+        if self:hitTest(cx, cy) and btn == 1 then
+            self._isDraggingSlider = true
+            self:updateFromMouse(cx)
+        end
+    elseif event == "mouse_drag" then
+        local btn, cx, cy = p1, p2, p3
+        if self._isDraggingSlider then
+            self:updateFromMouse(cx)
+            return true
+        end
+    elseif event == "mouse_up" then
+        if self._isDraggingSlider then
+            self._isDraggingSlider = false
+            return true
+        end
+    end
+
+    return Element.handleEvent(self, event, p1, p2, p3)
+end
+
+function Slider:draw(renderTarget)
+    if not self.visible then return end
+
+    local x, y = self:getAbsolutePosition()
+    local w, h = self:getAbsoluteSize()
+
+    renderTarget.setBackgroundColor(self.backgroundColor)
+    for dy = 0, h - 1 do
+        renderTarget.setCursorPos(x, y + dy)
+        renderTarget.write(string.rep(" ", w))
+    end
+
+    local ratio = (self.value - self.min) / (self.max - self.min)
+    if ratio ~= ratio then ratio = 0 end
+    local handleX = math.floor(ratio * (w - 1))
+
+    renderTarget.setCursorPos(x + handleX, y + math.floor((h - 1) / 2))
+    renderTarget.setBackgroundColor(self.sliderColor)
+    renderTarget.setTextColor(self.foregroundColor)
+    renderTarget.write(" ")
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+    for _, c in ipairs(sortedChildren) do c:draw(renderTarget) end
+end
+
+return Slider
+widgets/multiline.lua
+2261
+local class = require("core.class")
+local Element = require("core.element")
+
+local Multiline = class(Element)
+
+function Multiline:new(text)
+    Element.new(self)
+    self.text = text or ""
+    self.size.offsetX = 20
+    self.size.offsetY = 5
+    self.backgroundColor = colors.black
+    self.foregroundColor = colors.white
+    self.scrollY = 0
+end
+
+local function wrapText(str, limit)
+    local lines = {}
+    for line in string.gmatch(str .. '\n', "(.-)\n") do
+        if #line == 0 then
+            table.insert(lines, "")
+        else
+            while #line > 0 do
+                table.insert(lines, string.sub(line, 1, limit))
+                line = string.sub(line, limit + 1)
+            end
+        end
+    end
+    return lines
+end
+
+function Multiline:handleEvent(event, p1, p2, p3)
+    if not self.visible then return false end
+
+    if event == "mouse_scroll" then
+        local dir, cx, cy = p1, p2, p3
+        if self:hitTest(cx, cy) then
+            self.scrollY = self.scrollY + dir
+            if self.scrollY < 0 then self.scrollY = 0 end
+            return true
+        end
+    end
+
+    return Element.handleEvent(self, event, p1, p2, p3)
+end
+
+function Multiline:draw(renderTarget)
+    if not self.visible then return end
+
+    local x, y = self:getAbsolutePosition()
+    local w, h = self:getAbsoluteSize()
+
+    if w > 0 and h > 0 then
+        renderTarget.setBackgroundColor(self.backgroundColor)
+        for dy = 0, h - 1 do
+            renderTarget.setCursorPos(x, y + dy)
+            renderTarget.write(string.rep(" ", w))
+        end
+    end
+
+    renderTarget.setTextColor(self.foregroundColor)
+
+    local lines = wrapText(self.text, w)
+
+    local maxScroll = math.max(0, #lines - h)
+    if self.scrollY > maxScroll then self.scrollY = maxScroll end
+
+    for i = 1, h do
+        local lineIdx = self.scrollY + i
+        if lineIdx <= #lines then
+            renderTarget.setCursorPos(x, y + i - 1)
+            renderTarget.write(lines[lineIdx])
+        end
+    end
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+    for _, c in ipairs(sortedChildren) do c:draw(renderTarget) end
+end
+
+return Multiline
+widgets/textedit.lua
+7442
+local class = require("core.class")
+local Element = require("core.element")
+
+local TextEdit = class(Element)
+
+function TextEdit:new()
+    Element.new(self)
+    self.lines = { "" }
+    self.cursorLine = 1
+    self.cursorCol = 1
+    self.scrollY = 0
+    self.isFocused = false
+    self.size.offsetX = 30
+    self.size.offsetY = 8
+    self.backgroundColor = colors.black
+    self.foregroundColor = colors.white
+    self.placeholderColor = colors.gray
+    self.placeholder = "Type here..."
+end
+
+function TextEdit:getText()
+    return table.concat(self.lines, "\n")
+end
+
+function TextEdit:setText(str)
+    self.lines = {}
+    for line in string.gmatch(str .. "\n", "(.-)\n") do
+        table.insert(self.lines, line)
+    end
+    if #self.lines == 0 then self.lines = { "" } end
+    self.cursorLine = #self.lines
+    self.cursorCol = #self.lines[self.cursorLine] + 1
+end
+
+function TextEdit:handleEvent(event, p1, p2, p3)
+    if not self.visible then return false end
+
+    if event == "mouse_click" or event == "monitor_touch" then
+        local btn, cx, cy = p1, p2, p3
+        if event == "monitor_touch" then
+            btn = 1; cx = p1; cy = p2;
+        end
+
+        if self:hitTest(cx, cy) then
+            self.isFocused = true
+            local ex, ey = self:getAbsolutePosition()
+            local clickedLine = self.scrollY + (cy - ey) + 1
+            if clickedLine >= 1 and clickedLine <= #self.lines then
+                self.cursorLine = clickedLine
+                local lineLen = #self.lines[self.cursorLine]
+                self.cursorCol = math.min(cx - ex + 1, lineLen + 1)
+            end
+            return true
+        else
+            self.isFocused = false
+        end
+    elseif event == "mouse_scroll" then
+        local dir, cx, cy = p1, p2, p3
+        if self:hitTest(cx, cy) then
+            self.scrollY = self.scrollY + dir
+            if self.scrollY < 0 then self.scrollY = 0 end
+            local _, h = self:getAbsoluteSize()
+            local maxScroll = math.max(0, #self.lines - h)
+            if self.scrollY > maxScroll then self.scrollY = maxScroll end
+            return true
+        end
+    end
+
+    if self.isFocused then
+        if event == "char" then
+            local line = self.lines[self.cursorLine]
+            local before = string.sub(line, 1, self.cursorCol - 1)
+            local after = string.sub(line, self.cursorCol)
+            self.lines[self.cursorLine] = before .. p1 .. after
+            self.cursorCol = self.cursorCol + 1
+            return true
+        elseif event == "key" then
+            local key = p1
+            if key == keys.backspace then
+                if self.cursorCol > 1 then
+                    local line = self.lines[self.cursorLine]
+                    self.lines[self.cursorLine] = string.sub(line, 1, self.cursorCol - 2) ..
+                        string.sub(line, self.cursorCol)
+                    self.cursorCol = self.cursorCol - 1
+                elseif self.cursorLine > 1 then
+                    local prevLine = self.lines[self.cursorLine - 1]
+                    local curLine = self.lines[self.cursorLine]
+                    self.cursorCol = #prevLine + 1
+                    self.lines[self.cursorLine - 1] = prevLine .. curLine
+                    table.remove(self.lines, self.cursorLine)
+                    self.cursorLine = self.cursorLine - 1
+                end
+                return true
+            elseif key == keys.enter then
+                local line = self.lines[self.cursorLine]
+                local before = string.sub(line, 1, self.cursorCol - 1)
+                local after = string.sub(line, self.cursorCol)
+                self.lines[self.cursorLine] = before
+                table.insert(self.lines, self.cursorLine + 1, after)
+                self.cursorLine = self.cursorLine + 1
+                self.cursorCol = 1
+                local _, h = self:getAbsoluteSize()
+                if self.cursorLine > self.scrollY + h then self.scrollY = self.cursorLine - h end
+                return true
+            elseif key == keys.up then
+                if self.cursorLine > 1 then
+                    self.cursorLine = self.cursorLine - 1
+                    self.cursorCol = math.min(self.cursorCol, #self.lines[self.cursorLine] + 1)
+                    if self.cursorLine <= self.scrollY then self.scrollY = self.cursorLine - 1 end
+                end
+                return true
+            elseif key == keys.down then
+                if self.cursorLine < #self.lines then
+                    self.cursorLine = self.cursorLine + 1
+                    self.cursorCol = math.min(self.cursorCol, #self.lines[self.cursorLine] + 1)
+                    local _, h = self:getAbsoluteSize()
+                    if self.cursorLine > self.scrollY + h then self.scrollY = self.cursorLine - h end
+                end
+                return true
+            elseif key == keys.left then
+                if self.cursorCol > 1 then
+                    self.cursorCol = self.cursorCol - 1
+                elseif self.cursorLine > 1 then
+                    self.cursorLine = self.cursorLine - 1
+                    self.cursorCol = #self.lines[self.cursorLine] + 1
+                end
+                return true
+            elseif key == keys.right then
+                if self.cursorCol <= #self.lines[self.cursorLine] then
+                    self.cursorCol = self.cursorCol + 1
+                elseif self.cursorLine < #self.lines then
+                    self.cursorLine = self.cursorLine + 1
+                    self.cursorCol = 1
+                end
+                return true
+            end
+        end
+    end
+
+    return Element.handleEvent(self, event, p1, p2, p3)
+end
+
+function TextEdit:draw(renderTarget)
+    if not self.visible then return end
+
+    local x, y = self:getAbsolutePosition()
+    local w, h = self:getAbsoluteSize()
+
+    renderTarget.setBackgroundColor(self.backgroundColor)
+    for dy = 0, h - 1 do
+        renderTarget.setCursorPos(x, y + dy)
+        renderTarget.write(string.rep(" ", w))
+    end
+
+    if #self.lines == 1 and self.lines[1] == "" and not self.isFocused then
+        renderTarget.setCursorPos(x, y)
+        renderTarget.setTextColor(self.placeholderColor)
+        local p = self.placeholder
+        if #p > w then p = string.sub(p, 1, w) end
+        renderTarget.write(p)
+        return
+    end
+
+    renderTarget.setTextColor(self.foregroundColor)
+
+    for row = 1, h do
+        local lineIdx = self.scrollY + row
+        if lineIdx <= #self.lines then
+            local lineTxt = self.lines[lineIdx]
+            if #lineTxt > w then lineTxt = string.sub(lineTxt, 1, w) end
+            renderTarget.setCursorPos(x, y + row - 1)
+            renderTarget.write(lineTxt)
+        end
+    end
+
+    if self.isFocused and renderTarget.setCursorBlink then
+        local cursorScreenRow = self.cursorLine - self.scrollY
+        if cursorScreenRow >= 1 and cursorScreenRow <= h then
+            local cursorX = x + math.min(self.cursorCol - 1, w - 1)
+            local cursorY = y + cursorScreenRow - 1
+            renderTarget.setCursorPos(cursorX, cursorY)
+            renderTarget.setCursorBlink(true)
+        end
+    end
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+    for _, c in ipairs(sortedChildren) do c:draw(renderTarget) end
+end
+
+return TextEdit
+widgets/scrollpanel.lua
+2286
+local class = require("core.class")
+local Element = require("core.element")
+
+-- We use window.create() for real terminal-level clipping instead of manually
+-- checking bounds on every child draw call. This is the only correct way to clip in CC.
+local ScrollPanel = class(Element)
+
+function ScrollPanel:new()
+    Element.new(self)
+    self.backgroundColor = colors.black
+    self.size.offsetX = 20
+    self.size.offsetY = 8
+    self.scrollY = 0
+    self._window = nil
+end
+
+function ScrollPanel:handleEvent(event, p1, p2, p3)
+    if not self.visible then return false end
+
+    if event == "mouse_scroll" then
+        local dir, cx, cy = p1, p2, p3
+        if self:hitTest(cx, cy) then
+            self.scrollY = self.scrollY + dir
+            if self.scrollY < 0 then self.scrollY = 0 end
+            return true
+        end
+    end
+
+    if event == "mouse_click" or event == "mouse_drag" or event == "monitor_touch" then
+        local btn, cx, cy = p1, p2, p3
+        if event == "monitor_touch" then
+            btn = 1; cx = p1; cy = p2;
+        end
+
+        local ax, ay = self:getAbsolutePosition()
+        local aw, ah = self:getAbsoluteSize()
+        if cx >= ax and cx < ax + aw and cy >= ay and cy < ay + ah then
+            return Element.handleEvent(self, event, p1, p2, p3)
+        end
+        return false
+    end
+
+    return Element.handleEvent(self, event, p1, p2, p3)
+end
+
+function ScrollPanel:draw(renderTarget)
+    if not self.visible then return end
+
+    local x, y = self:getAbsolutePosition()
+    local w, h = self:getAbsoluteSize()
+
+    if not self._window then
+        self._window = window.create(renderTarget, x, y, w, h)
+    end
+
+    self._window.reposition(x, y, w, h)
+    self._window.setBackgroundColor(self.backgroundColor)
+    self._window.clear()
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+
+    -- Shift children up by scrollY purely for the draw pass, then restore
+    for _, c in ipairs(sortedChildren) do
+        local origOffsetY = c.position.offsetY
+        c.position.offsetY = origOffsetY - self.scrollY
+        c:draw(self._window)
+        c.position.offsetY = origOffsetY
+    end
+end
+
+return ScrollPanel
+widgets/dropdown.lua
+3516
+local class = require("core.class")
+local Element = require("core.element")
+
+local Dropdown = class(Element)
+
+function Dropdown:new(options)
+    Element.new(self)
+    self.options = options or {}
+    self.selectedIndex = 1
+    self.isOpen = false
+    self.size.offsetX = 15
+    self.size.offsetY = 1
+    self.backgroundColor = colors.gray
+    self.foregroundColor = colors.white
+    self.listBackgroundColor = colors.lightGray
+    self.listForegroundColor = colors.black
+    self.listHighlightColor = colors.blue
+    self.onChange = nil
+end
+
+function Dropdown:getSelectedText()
+    if self.options[self.selectedIndex] then
+        return tostring(self.options[self.selectedIndex])
+    end
+    return ""
+end
+
+function Dropdown:handleEvent(event, p1, p2, p3)
+    if not self.visible then return false end
+
+    if event == "mouse_click" or event == "monitor_touch" then
+        local btn, cx, cy = p1, p2, p3
+        if event == "monitor_touch" then
+            btn = 1; cx = p1; cy = p2;
+        end
+
+        if btn == 1 then
+            if self.isOpen then
+                local lx, ly = self:getAbsolutePosition()
+                local lw, _ = self:getAbsoluteSize()
+                ly = ly + 1
+
+                for i, opt in ipairs(self.options) do
+                    if cx >= lx and cx < lx + lw and cy == ly + i - 1 then
+                        self.selectedIndex = i
+                        self.isOpen = false
+                        if self.onChange then self.onChange(self, i, opt) end
+                        return true
+                    end
+                end
+                self.isOpen = false
+                return true
+            else
+                if self:hitTest(cx, cy) then
+                    self.isOpen = true
+                    return true
+                end
+            end
+        end
+    end
+
+    return Element.handleEvent(self, event, p1, p2, p3)
+end
+
+function Dropdown:draw(renderTarget)
+    if not self.visible then return end
+
+    local x, y = self:getAbsolutePosition()
+    local w, _ = self:getAbsoluteSize()
+
+    renderTarget.setBackgroundColor(self.backgroundColor)
+    renderTarget.setCursorPos(x, y)
+    renderTarget.write(string.rep(" ", w))
+
+    local arrow = self.isOpen and " v " or " > "
+    local headerText = self:getSelectedText()
+    local maxTxt = w - #arrow
+    if #headerText > maxTxt then headerText = string.sub(headerText, 1, maxTxt) end
+
+    renderTarget.setCursorPos(x, y)
+    renderTarget.setTextColor(self.foregroundColor)
+    renderTarget.write(headerText .. arrow)
+
+    if self.isOpen then
+        for i, opt in ipairs(self.options) do
+            local itemY = y + i
+            renderTarget.setCursorPos(x, itemY)
+
+            if i == self.selectedIndex then
+                renderTarget.setBackgroundColor(self.listHighlightColor)
+            else
+                renderTarget.setBackgroundColor(self.listBackgroundColor)
+            end
+
+            renderTarget.write(string.rep(" ", w))
+            renderTarget.setCursorPos(x, itemY)
+            renderTarget.setTextColor(self.listForegroundColor)
+            local optTxt = tostring(opt)
+            if #optTxt > w then optTxt = string.sub(optTxt, 1, w) end
+            renderTarget.write(optTxt)
+        end
+    end
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+    for _, c in ipairs(sortedChildren) do c:draw(renderTarget) end
+end
+
+return Dropdown
+widgets/colorselector.lua
+2590
+local class = require("core.class")
+local Element = require("core.element")
+
+local ColorSelector = class(Element)
+
+local CC_COLORS = {
+    colors.white, colors.orange, colors.magenta, colors.lightBlue,
+    colors.yellow, colors.lime, colors.pink, colors.gray,
+    colors.lightGray, colors.cyan, colors.purple, colors.blue,
+    colors.brown, colors.green, colors.red, colors.black,
+}
+
+function ColorSelector:new()
+    Element.new(self)
+    self.selectedColor = colors.white
+    self.tileWidth = 2
+    self.tileHeight = 1
+    self.columns = 8
+    local rows = math.ceil(16 / self.columns)
+    self.size.offsetX = self.columns * self.tileWidth
+    self.size.offsetY = rows
+    self.onChange = nil
+end
+
+function ColorSelector:handleEvent(event, p1, p2, p3)
+    if not self.visible then return false end
+
+    if event == "mouse_click" or event == "monitor_touch" then
+        local btn, cx, cy = p1, p2, p3
+        if event == "monitor_touch" then
+            btn = 1; cx = p1; cy = p2;
+        end
+
+        if self:hitTest(cx, cy) and btn == 1 then
+            local bx, by = self:getAbsolutePosition()
+            local col = math.floor((cx - bx) / self.tileWidth)
+            local row = cy - by
+            local idx = row * self.columns + col + 1
+
+            if idx >= 1 and idx <= 16 then
+                self.selectedColor = CC_COLORS[idx]
+                if self.onChange then self.onChange(self, self.selectedColor) end
+            end
+            return true
+        end
+    end
+
+    return Element.handleEvent(self, event, p1, p2, p3)
+end
+
+function ColorSelector:draw(renderTarget)
+    if not self.visible then return end
+
+    local x, y = self:getAbsolutePosition()
+
+    for i, color in ipairs(CC_COLORS) do
+        local idx = i - 1
+        local col = idx % self.columns
+        local row = math.floor(idx / self.columns)
+        local tx = x + col * self.tileWidth
+        local ty = y + row * self.tileHeight
+
+        renderTarget.setBackgroundColor(color)
+        renderTarget.setCursorPos(tx, ty)
+
+        if color == self.selectedColor then
+            renderTarget.setTextColor(color == colors.black and colors.white or colors.black)
+            renderTarget.write(string.rep("*", self.tileWidth))
+        else
+            renderTarget.write(string.rep(" ", self.tileWidth))
+        end
+    end
+
+    local sortedChildren = {}
+    for _, c in ipairs(self.children) do table.insert(sortedChildren, c) end
+    table.sort(sortedChildren, function(a, b) return a.zIndex < b.zIndex end)
+    for _, c in ipairs(sortedChildren) do c:draw(renderTarget) end
+end
+
+return ColorSelector
+manifest.lua
+2109
+-- manifest.lua
+-- Package manifest for sxui.
+-- Consumed by sxpm to install, upgrade, and remove the SX-UI framework.
+
+return {
+    format = "sxpkg-1",
+
+    meta = {
+        name        = "sxui",
+        version     = "2.2.0",
+        author      = "SwirX",
+        description = "Modern, object-oriented UI framework for CC:Tweaked with UDim2 layouts, animations, and widgets.",
+        channel     = "stable",
+    },
+
+    dependencies = {},
+
+    files = {
+        -- Core entry point
+        { path = "/lib/sxui/ui.lua",                    source = "ui.lua" },
+
+        -- Core internals
+        { path = "/lib/sxui/core/class.lua",            source = "core/class.lua" },
+        { path = "/lib/sxui/core/animator.lua",         source = "core/animator.lua" },
+        { path = "/lib/sxui/core/element.lua",          source = "core/element.lua" },
+        { path = "/lib/sxui/core/screen.lua",           source = "core/screen.lua" },
+
+        -- Widgets
+        { path = "/lib/sxui/widgets/frame.lua",         source = "widgets/frame.lua" },
+        { path = "/lib/sxui/widgets/appwindow.lua",     source = "widgets/appwindow.lua" },
+        { path = "/lib/sxui/widgets/button.lua",        source = "widgets/button.lua" },
+        { path = "/lib/sxui/widgets/label.lua",         source = "widgets/label.lua" },
+        { path = "/lib/sxui/widgets/input.lua",         source = "widgets/input.lua" },
+        { path = "/lib/sxui/widgets/checkbox.lua",      source = "widgets/checkbox.lua" },
+        { path = "/lib/sxui/widgets/slider.lua",        source = "widgets/slider.lua" },
+        { path = "/lib/sxui/widgets/multiline.lua",     source = "widgets/multiline.lua" },
+        { path = "/lib/sxui/widgets/textedit.lua",      source = "widgets/textedit.lua" },
+        { path = "/lib/sxui/widgets/scrollpanel.lua",   source = "widgets/scrollpanel.lua" },
+        { path = "/lib/sxui/widgets/dropdown.lua",      source = "widgets/dropdown.lua" },
+        { path = "/lib/sxui/widgets/colorselector.lua", source = "widgets/colorselector.lua" },
+    },
+
+    integrity = {
+        sha256 = "FILL_ME",
+    },
+}
