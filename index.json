@@ -1,11 +1,16 @@
 {
     "sxos-core": {
-        "latest": "2.0.0",
+        "latest": "2.0.1",
         "versions": {
             "2.0.0": {
                 "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sxos-core/sxos-core-2.0.0.sxpkg",
                 "sha256": "795187d446caccad3ae61f97c70dc0d3ac6d3087fbe8ab048ff18ebffda85cbe",
                 "size": 144588
+            },
+            "2.0.1": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sxos-core/sxos-core-2.0.1.sxpkg",
+                "sha256": "d2a40bf8907593c382e8370b7b35af1ed14a396ec08b266cc19faf6fc760d142",
+                "size": 146831
             }
         }
     },
