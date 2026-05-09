@@ -192,7 +192,7 @@ return {
     }
 }
 sys/kernel.lua
-5667
+5669
 -- /sys/kernel.lua
 -- SXOS Kernel: Stages 2-6 of the boot sequence.
 -- Stage 2: Load core libraries and initialize the event router.
@@ -250,7 +250,7 @@ log.info("kernel", "Stage 5 complete: user=" .. username)
 -- Stage 6: Build the shell process environment and launch bsh.
 local system_config      = auth.read_config()
 
-local shell_env          = env_lib.create_process_env(_G, {
+local shell_env          = env_lib.create_process_env(_ENV, {
     PATH     = "/bin:/usr/bin",
     HOME     = userinfo.home,
     USER     = username,
