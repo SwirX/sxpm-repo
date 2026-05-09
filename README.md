@@ -1,46 +1,47 @@
-# SXPM Repository
+# sxpm-repo
 
-This is the central package repository for **SXOS** and its `sxpm` package manager. 
+The official package repository for [SXOS](https://github.com/SwirX/sxos).
 
-## Repository Structure
+## Branches
 
-SXPM packages are organized into branches representing different release channels. You should use `git checkout <branch>` to navigate these channels:
+| Branch | Description |
+|--------|-------------|
+| `stable` | Production releases |
+| `testing` | Pre-release validation |
+| `nightly` | Automated development builds |
 
-- `stable`: Production-ready, fully tested packages.
-- `testing`: Release candidates and beta packages.
-- `nightly`: Bleeding edge builds.
+## Index URL (stable)
 
-### Index Layout (`index.json`)
-At the root of each branch, there is an `index.json` file. This tells SXPM what packages exist and where their `.sxpkg` binary file is hosted.
-
-```json
-{
-  "music": {
-    "latest": "1.2.0",
-    "versions": {
-      "1.2.0": {
-        "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/music/1.2.0.sxpkg",
-        "sha256": "abc12345...",
-        "dependencies": {
-          "sxui": ">=1.0.0"
-        }
-      }
-    }
-  }
-}
+```
+https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/index.json
 ```
 
-### The `.sxpkg` Package Format
-The SXPM package manager creates serialized `.sxpkg` archives. 
+`sxpm` syncs this index automatically on `sxpm sync` and `sxpm upgrade`.
 
-#### How to build an app locally:
-1. Initialize your project folder with a `manifest.lua`.
-2. Keep your code in a `src/` folder.
-3. On SXOS, run `sxpm build .` inside your project directory.
-4. SXPM will safely map the directories and spit out a `.sxpkg` archive string.
+## Adding a Package
 
-#### Submitting a Package:
-1. Fork this repository.
-2. Build your `.sxpkg` and place it in `/packages/<name>/<version>.sxpkg`.
-3. Update the `index.json` to expose your package.
-4. Submit a Pull Request targeting the `testing` or `nightly` branch!
+1. Build your package:
+   ```sh
+   sxpm build manifest.lua
+   ```
+2. Place the generated `.sxpkg` file in `packages/<name>/<name>-<version>.sxpkg`.
+3. Append your entry to `index.json`:
+   ```json
+   "my-package": {
+     "latest": "1.0.0",
+     "versions": {
+       "1.0.0": {
+         "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/my-package/my-package-1.0.0.sxpkg",
+         "sha256": "<sha256>",
+         "size": 12345
+       }
+     }
+   }
+   ```
+4. Open a Pull Request against the appropriate branch.
+
+## Published Packages
+
+| Package | Latest | Description |
+|---------|--------|-------------|
+| `sxos-core` | 2.0.0 | SXOS operating system core |
