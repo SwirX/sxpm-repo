@@ -1,0 +1,805 @@
+SXP1
+lib/sh/builtins.lua
+3457
+-- /lib/sh/builtins.lua
+-- Built-in shell commands for bsh.
+-- Builtins are handled before PATH lookup since they need to modify the shell's
+-- own state (working directory, environment, aliases, etc.) which a child
+-- process cannot do.
+
+local builtins = {}
+
+local expand_module = dofile("/lib/sh/expand.lua")
+
+-- Registry: command_name -> function(shell_state, args)
+-- shell_state is the mutable state table owned by bsh's main loop.
+-- Functions return true to continue, false to exit the shell.
+local BUILTINS = {}
+
+BUILTINS["cd"] = function(shell_state, args)
+    local target = args[2]
+    if not target then
+        target = shell_state.env.HOME or "/"
+    end
+    target = expand_module.apply(target, shell_state.env, false)
+    -- Resolve relative paths.
+    if string.sub(target, 1, 1) ~= "/" then
+        target = "/" .. fs.combine(shell_state.cwd, target)
+    else
+        target = "/" .. fs.combine("", target)
+    end
+    if fs.exists(target) and fs.isDir(target) then
+        shell_state.cwd = target
+        shell_state.env.PWD = target
+    else
+        printError("cd: " .. target .. ": no such directory")
+    end
+    return true
+end
+
+BUILTINS["export"] = function(shell_state, args)
+    for i = 2, #args do
+        local assignment = args[i]
+        local eq = string.find(assignment, "=")
+        if eq then
+            local key = string.sub(assignment, 1, eq - 1)
+            local value = string.sub(assignment, eq + 1)
+            shell_state.env[key] = value
+        else
+            printError("export: invalid assignment: " .. assignment)
+        end
+    end
+    return true
+end
+
+BUILTINS["unset"] = function(shell_state, args)
+    for i = 2, #args do
+        shell_state.env[args[i]] = nil
+    end
+    return true
+end
+
+BUILTINS["alias"] = function(shell_state, args)
+    if #args < 2 then
+        for name, value in pairs(shell_state.aliases) do
+            print(name .. "=" .. value)
+        end
+        return true
+    end
+    local definition = args[2]
+    local eq = string.find(definition, "=")
+    if eq then
+        shell_state.aliases[string.sub(definition, 1, eq - 1)] = string.sub(definition, eq + 1)
+    else
+        printError("alias: expected name=value")
+    end
+    return true
+end
+
+BUILTINS["unalias"] = function(shell_state, args)
+    for i = 2, #args do
+        shell_state.aliases[args[i]] = nil
+    end
+    return true
+end
+
+BUILTINS["source"] = function(shell_state, args)
+    local target = args[2]
+    if not target then
+        printError("source: filename required")
+        return true
+    end
+    if string.sub(target, 1, 1) ~= "/" then
+        target = fs.combine(shell_state.cwd, target)
+    end
+    if not fs.exists(target) then
+        printError("source: " .. target .. ": not found")
+        return true
+    end
+    local fn, err = loadfile(target, "t", shell_state.process_env)
+    if fn then
+        local ok, run_err = pcall(fn)
+        if not ok then printError("source: " .. tostring(run_err)) end
+    else
+        printError("source: " .. tostring(err))
+    end
+    return true
+end
+
+BUILTINS["exit"] = function(shell_state, _args)
+    return false
+end
+
+-- Check if a command name is a builtin.
+function builtins.is_builtin(name)
+    return BUILTINS[name] ~= nil
+end
+
+-- Execute a builtin. Returns the continue boolean.
+function builtins.execute(name, shell_state, args)
+    local fn = BUILTINS[name]
+    if not fn then return true end
+    return fn(shell_state, args)
+end
+
+return builtins
+lib/sh/completion.lua
+3786
+-- /lib/sh/completion.lua
+-- Tab and inline completion for bsh.
+-- Provides command name completion (from PATH and aliases) and
+-- filename completion for arguments.
+-- Returns full candidate lists so bsh can cycle through them.
+
+local completion = {}
+
+-- Collect all command names starting with prefix.
+local function gather_commands(prefix, shell_state)
+    local candidates = {}
+    local seen = {}
+
+    for alias_name in pairs(shell_state.aliases) do
+        if string.sub(alias_name, 1, #prefix) == prefix and alias_name ~= prefix then
+            if not seen[alias_name] then
+                seen[alias_name] = true
+                table.insert(candidates, alias_name)
+            end
+        end
+    end
+
+    local path_str = shell_state.env.PATH or "/bin;/usr/bin"
+    for dir in string.gmatch(path_str, "[^;:]+") do
+        if fs.exists(dir) and fs.isDir(dir) then
+            for _, filename in ipairs(fs.list(dir)) do
+                local stem = string.gsub(filename, "%.lua$", "")
+                if string.sub(stem, 1, #prefix) == prefix and stem ~= prefix then
+                    if not seen[stem] then
+                        seen[stem] = true
+                        table.insert(candidates, stem)
+                    end
+                end
+            end
+        end
+    end
+
+    table.sort(candidates)
+    return candidates
+end
+
+-- Collect all filenames starting with prefix, relative to cwd.
+local function gather_filenames(prefix, shell_state)
+    local dir = shell_state.cwd
+    local name_part = prefix
+
+    local last_slash = 0
+    for i = #prefix, 1, -1 do
+        if string.sub(prefix, i, i) == "/" then
+            last_slash = i
+            break
+        end
+    end
+
+    local dir_prefix = ""
+    if last_slash > 0 then
+        dir_prefix = string.sub(prefix, 1, last_slash)
+        local dir_part = string.sub(prefix, 1, last_slash - 1)
+        if string.sub(dir_part, 1, 1) == "/" then
+            dir = dir_part
+        else
+            dir = fs.combine(dir, dir_part)
+        end
+        name_part = string.sub(prefix, last_slash + 1)
+    end
+
+    if not fs.exists(dir) or not fs.isDir(dir) then return {} end
+
+    local candidates = {}
+    for _, entry in ipairs(fs.list(dir)) do
+        if string.sub(entry, 1, #name_part) == name_part and entry ~= name_part then
+            local full_entry = dir_prefix .. entry
+            if fs.isDir(fs.combine(dir, entry)) then
+                full_entry = full_entry .. "/"
+            end
+            table.insert(candidates, full_entry)
+        end
+    end
+    table.sort(candidates)
+    return candidates
+end
+
+-- Return a list of completion candidates for the current line.
+-- Returns: candidates (list of full replacement strings for the last word), prefix (the part typed so far)
+function completion.candidates(line, cursor_pos, shell_state)
+    local partial = string.sub(line, 1, cursor_pos)
+
+    local words = {}
+    for word in string.gmatch(partial, "%S+") do
+        table.insert(words, word)
+    end
+    local ends_with_space = string.sub(partial, -1) == " "
+    local word_count = #words + (ends_with_space and 1 or 0)
+
+    if word_count <= 1 then
+        local prefix = words[1] or ""
+        return gather_commands(prefix, shell_state), prefix
+    else
+        local prefix = ends_with_space and "" or (words[#words] or "")
+        return gather_filenames(prefix, shell_state), prefix
+    end
+end
+
+-- Legacy single-result API used by inline ghost hint.
+function completion.complete(line, cursor_pos, shell_state)
+    local candidates, prefix = completion.candidates(line, cursor_pos, shell_state)
+    if #candidates == 0 then return nil end
+    -- Return the suffix of the first candidate only, for ghost-text display.
+    return string.sub(candidates[1], #prefix + 1)
+end
+
+return completion
+lib/sh/execute.lua
+6898
+-- /lib/sh/execute.lua
+-- AST executor for bsh.
+-- Walks the parsed AST and carries out commands, pipelines, and sequences.
+-- Handles: argument expansion, I/O redirection, pipes, builtins, and PATH lookup.
+
+local execute         = {}
+
+local expand_module   = dofile("/lib/sh/expand.lua")
+local builtins_module = dofile("/lib/sh/builtins.lua")
+
+-- Resolve a command name to an absolute executable path.
+-- Checks aliases first, then PATH directories.
+-- Returns the resolved path string, or nil if not found.
+local function resolve_executable(name, shell_state)
+    -- Alias expansion: replace name with alias target for resolution.
+    local alias_target = shell_state.aliases[name]
+    if alias_target then
+        name = string.match(alias_target, "^%S+") or name
+    end
+
+    -- Absolute or explicitly relative path.
+    if string.sub(name, 1, 1) == "/"
+        or string.sub(name, 1, 2) == "./"
+        or string.sub(name, 1, 3) == "../"
+    then
+        local resolved
+        if string.sub(name, 1, 1) == "/" then
+            resolved = fs.combine("", name)
+        else
+            resolved = fs.combine(shell_state.cwd, name)
+        end
+        if fs.exists(resolved) and not fs.isDir(resolved) then return resolved end
+        if fs.exists(resolved .. ".lua") then return resolved .. ".lua" end
+        return nil
+    end
+
+    -- Search PATH directories.
+    local path_str = shell_state.env.PATH or "/bin;/usr/bin"
+    for dir in string.gmatch(path_str, "[^;:]+") do
+        local candidate = fs.combine(dir, name)
+        if fs.exists(candidate) and not fs.isDir(candidate) then return candidate end
+        if fs.exists(candidate .. ".lua") and not fs.isDir(candidate .. ".lua") then
+            return candidate .. ".lua"
+        end
+    end
+    return nil
+end
+
+-- Run a single external command with fully expanded args and resolved redirects.
+-- stdio table: { stdin_path, stdout_path, append_stdout }
+local function run_external(exec_path, expanded_args, stdio, shell_state)
+    -- Set up stdout redirect by temporarily swapping print/write.
+    local old_print = _G.print
+    local old_write = _G.write
+    local stdout_handle = nil
+
+    if stdio.stdout_path then
+        local mode = stdio.append_stdout and "a" or "w"
+        stdout_handle = fs.open(stdio.stdout_path, mode)
+        if stdout_handle then
+            _G.print = function(...)
+                local parts = {}
+                for i = 1, select("#", ...) do
+                    table.insert(parts, tostring(select(i, ...)))
+                end
+                stdout_handle.write(table.concat(parts, "\t") .. "\n")
+            end
+            _G.write = function(s) stdout_handle.write(tostring(s)) end
+        end
+    end
+
+    -- Set up stdin redirect.
+    local stdin_handle = nil
+    if stdio.stdin_path then
+        stdin_handle = fs.open(stdio.stdin_path, "r")
+        -- Inject a replacement read function into the process env.
+        if stdin_handle then
+            shell_state.process_env.read = function() return stdin_handle.readLine() end
+        end
+    end
+
+    local fn, err = loadfile(exec_path, "t", shell_state.process_env)
+    local success = true
+    if fn then
+        local ok, run_err = pcall(fn, table.unpack(expanded_args, 2))
+        if not ok then
+            printError("bsh: " .. exec_path .. ": " .. tostring(run_err))
+            success = false
+        end
+    else
+        printError("bsh: " .. exec_path .. ": " .. tostring(err))
+        success = false
+    end
+
+    -- Restore I/O.
+    if stdout_handle then
+        stdout_handle.close()
+        _G.print = old_print
+        _G.write = old_write
+    end
+    if stdin_handle then
+        stdin_handle.close()
+        shell_state.process_env.read = old_print -- restore stub; real read still in env
+    end
+
+    return success
+end
+
+-- Execute a single command AST node.
+local function execute_command(node, shell_state, override_stdio)
+    -- Expand all argument tokens.
+    local expanded_args = {}
+    for _, raw_arg in ipairs(node.args) do
+        table.insert(expanded_args, expand_module.apply(raw_arg, shell_state.env, false))
+    end
+
+    if #expanded_args == 0 then return true end
+
+    local cmd_name = expanded_args[1]
+
+    -- Resolve redirects.
+    local stdio = override_stdio or {}
+    for _, redir in ipairs(node.redirs) do
+        local target = expand_module.apply(redir.target, shell_state.env, false)
+        if redir.direction == "REDIR_OUT" then
+            stdio.stdout_path = target
+            stdio.append_stdout = false
+        elseif redir.direction == "REDIR_APPEND" then
+            stdio.stdout_path = target
+            stdio.append_stdout = true
+        elseif redir.direction == "REDIR_IN" then
+            stdio.stdin_path = target
+        end
+    end
+
+    -- Check builtins first: they modify shell_state directly.
+    if builtins_module.is_builtin(cmd_name) then
+        return builtins_module.execute(cmd_name, shell_state, expanded_args)
+    end
+
+    -- Resolve external binary.
+    local exec_path = resolve_executable(cmd_name, shell_state)
+    if not exec_path then
+        printError("bsh: " .. cmd_name .. ": command not found")
+        return true
+    end
+
+    run_external(exec_path, expanded_args, stdio, shell_state)
+    return true
+end
+
+-- Execute a pipeline: cmd1 | cmd2 | cmd3
+-- Implements pipes by routing stdout of cmd_n to a temp file read by cmd_n+1.
+local function execute_pipeline(node, shell_state)
+    local commands = node.commands
+    local buffer_paths = {}
+
+    -- Generate temp file paths for the inter-command buffers.
+    for i = 1, #commands - 1 do
+        buffer_paths[i] = "/tmp/sxpipe_" .. os.clock() * 1000 .. "_" .. i
+    end
+
+    for index, cmd_node in ipairs(commands) do
+        local stdio = {}
+        if index > 1 then
+            stdio.stdin_path = buffer_paths[index - 1]
+        end
+        if index < #commands then
+            stdio.stdout_path = buffer_paths[index]
+            stdio.append_stdout = false
+        end
+        execute_command(cmd_node, shell_state, stdio)
+    end
+
+    -- Clean up temp buffers.
+    for _, buf_path in ipairs(buffer_paths) do
+        if fs.exists(buf_path) then fs.delete(buf_path) end
+    end
+    return true
+end
+
+-- Top-level executor: handles command, pipeline, and sequence nodes.
+function execute.run(ast_node, shell_state)
+    if not ast_node then return true end
+
+    if ast_node.type == "command" then
+        return execute_command(ast_node, shell_state, nil)
+    elseif ast_node.type == "pipeline" then
+        return execute_pipeline(ast_node, shell_state)
+    elseif ast_node.type == "sequence" then
+        local continue_shell = true
+        for _, statement in ipairs(ast_node.statements) do
+            continue_shell = execute.run(statement, shell_state)
+            if not continue_shell then return false end
+        end
+        return continue_shell
+    end
+
+    return true
+end
+
+return execute
+lib/sh/expand.lua
+1631
+-- /lib/sh/expand.lua
+-- Variable and tilde expansion for bsh.
+-- Processes WORD tokens before they are passed to the executor.
+-- Only called on tokens that did NOT come from single-quoted strings
+-- (single quotes suppress all expansion).
+
+local expand = {}
+
+-- Expand $VAR and ${VAR} references in a string against the given environ table.
+-- The environ table should be the process_env.ENV flat dict.
+function expand.variables(str, environ)
+    if type(str) ~= "string" then return str end
+
+    -- ${VAR_NAME} longer form first to avoid partial matches on $VAR.
+    str = string.gsub(str, "%${([%w_]+)}", function(name)
+        local value = environ[name]
+        return value ~= nil and tostring(value) or ""
+    end)
+
+    -- $VAR_NAME shorter form.
+    str = string.gsub(str, "%$([%w_]+)", function(name)
+        local value = environ[name]
+        return value ~= nil and tostring(value) or ""
+    end)
+
+    return str
+end
+
+-- Expand a leading tilde to the user's home directory.
+function expand.tilde(str, home_dir)
+    if type(str) ~= "string" then return str end
+    if str == "~" then return home_dir or "/" end
+    if string.sub(str, 1, 2) == "~/" then
+        return (home_dir or "/") .. string.sub(str, 2)
+    end
+    return str
+end
+
+-- Apply all applicable expansions to a token string.
+-- is_single_quoted: if true, skip all expansion (literal string).
+function expand.apply(str, environ, is_single_quoted)
+    if is_single_quoted then return str end
+    local home = environ and environ.HOME or "/"
+    str = expand.tilde(str, home)
+    str = expand.variables(str, environ or {})
+    return str
+end
+
+return expand
+lib/sh/parser.lua
+4006
+-- /lib/sh/parser.lua
+-- Shell parser for bsh: converts a token stream into a command AST.
+--
+-- Grammar (simplified):
+--   pipeline    ::= command (PIPE command)*
+--   command     ::= WORD* redirect*
+--   redirect    ::= (REDIR_OUT | REDIR_APPEND | REDIR_IN) WORD
+--   sequence    ::= pipeline (SEMICOLON pipeline)*
+--   statement   ::= sequence [AMPERSAND]
+--
+-- AST node types:
+--   { type = "command",  args = [...], redirs = [...] }
+--   { type = "pipeline", commands = [...] }
+--   { type = "sequence", statements = [...], background = bool }
+
+local parser = {}
+
+local tokenizer_module = dofile("/lib/sh/tokenizer.lua")
+local TOKEN = tokenizer_module.TOKEN
+
+-- Parse a token list into an AST.
+-- tokens: result from tokenizer.tokenize()
+-- Returns the root AST node or nil + error string.
+function parser.parse(tokens)
+    local index = 1
+
+    local function peek()
+        return tokens[index]
+    end
+
+    local function consume()
+        local tok = tokens[index]
+        index = index + 1
+        return tok
+    end
+
+    local function expect(token_type)
+        local tok = consume()
+        if tok.type ~= token_type then
+            return nil, "expected " .. token_type .. " got " .. tok.type
+        end
+        return tok
+    end
+
+    -- Parse a single command: collect WORD args and redirect specs.
+    local function parse_command()
+        local args = {}
+        local redirs = {}
+
+        while true do
+            local tok = peek()
+            if not tok or tok.type == TOKEN.EOF
+                or tok.type == TOKEN.PIPE
+                or tok.type == TOKEN.SEMICOLON
+                or tok.type == TOKEN.AMPERSAND
+            then
+                break
+            end
+
+            if tok.type == TOKEN.REDIR_OUT
+                or tok.type == TOKEN.REDIR_APPEND
+                or tok.type == TOKEN.REDIR_IN
+            then
+                local redir_type = consume().type
+                local target = consume()
+                if not target or target.type ~= TOKEN.WORD then
+                    return nil, "expected filename after redirect operator"
+                end
+                table.insert(redirs, { direction = redir_type, target = target.value })
+            elseif tok.type == TOKEN.WORD then
+                table.insert(args, consume().value)
+            else
+                consume() -- skip unexpected token
+            end
+        end
+
+        if #args == 0 and #redirs == 0 then return nil end
+        return { type = "command", args = args, redirs = redirs }
+    end
+
+    -- Parse a pipeline: one or more commands joined by PIPE.
+    local function parse_pipeline()
+        local commands = {}
+        local first = parse_command()
+        if not first then return nil end
+        table.insert(commands, first)
+
+        while peek() and peek().type == TOKEN.PIPE do
+            consume() -- consume |
+            local next_cmd = parse_command()
+            if not next_cmd then
+                return nil, "expected command after pipe"
+            end
+            table.insert(commands, next_cmd)
+        end
+
+        if #commands == 1 then return commands[1] end
+        return { type = "pipeline", commands = commands }
+    end
+
+    -- Parse a sequence of pipelines separated by semicolons.
+    local statements = {}
+    local background = false
+
+    while peek() and peek().type ~= TOKEN.EOF do
+        -- Skip leading semicolons.
+        if peek().type == TOKEN.SEMICOLON then
+            consume()
+        elseif peek().type == TOKEN.AMPERSAND then
+            consume()
+            background = true
+        else
+            local statement, err = parse_pipeline()
+            if err then return nil, err end
+            if statement then
+                table.insert(statements, statement)
+            end
+        end
+    end
+
+    if #statements == 0 then return nil end
+    if #statements == 1 and not background then return statements[1] end
+    return { type = "sequence", statements = statements, background = background }
+end
+
+return parser
+lib/sh/tokenizer.lua
+4800
+-- /lib/sh/tokenizer.lua
+-- Lexical analysis for the SXOS shell (bsh).
+-- Converts a raw input string into a flat list of typed tokens.
+--
+-- Token types produced:
+--   WORD         - a bare word or quoted string (their content after unquoting)
+--   PIPE         - the | operator
+--   REDIR_OUT    - the > operator (stdout redirect, truncate)
+--   REDIR_APPEND - the >> operator (stdout redirect, append)
+--   REDIR_IN     - the < operator (stdin redirect)
+--   SEMICOLON    - the ; command separator
+--   AMPERSAND    - the & background execution marker
+--   NEWLINE      - end of logical line (treated as SEMICOLON in the parser)
+--   EOF          - end of input
+
+local tokenizer = {}
+
+local TOKEN = {
+    WORD         = "WORD",
+    PIPE         = "PIPE",
+    REDIR_OUT    = "REDIR_OUT",
+    REDIR_APPEND = "REDIR_APPEND",
+    REDIR_IN     = "REDIR_IN",
+    SEMICOLON    = "SEMICOLON",
+    AMPERSAND    = "AMPERSAND",
+    NEWLINE      = "NEWLINE",
+    EOF          = "EOF",
+}
+tokenizer.TOKEN = TOKEN
+
+-- Tokenize a single line of shell input.
+-- Returns a list of { type, value } tables, always ending with an EOF token.
+function tokenizer.tokenize(input)
+    local tokens = {}
+    local index = 1
+    local length = #input
+
+    local function peek()
+        return index <= length and string.sub(input, index, index) or nil
+    end
+
+    local function consume()
+        local ch = string.sub(input, index, index)
+        index = index + 1
+        return ch
+    end
+
+    local function emit(token_type, value)
+        table.insert(tokens, { type = token_type, value = value })
+    end
+
+    while index <= length do
+        local ch = peek()
+
+        -- Skip whitespace between tokens.
+        if ch == " " or ch == "\t" then
+            consume()
+
+            -- Double-quoted string: preserves spaces and applies variable expand later.
+        elseif ch == '"' then
+            consume() -- opening quote
+            local word = ""
+            while index <= length do
+                local inner = consume()
+                if inner == '"' then break end
+                if inner == "\\" and index <= length then
+                    -- Escape sequences inside double quotes.
+                    local escaped = consume()
+                    if escaped == "n" then
+                        word = word .. "\n"
+                    elseif escaped == "t" then
+                        word = word .. "\t"
+                    else
+                        word = word .. escaped
+                    end
+                else
+                    word = word .. inner
+                end
+            end
+            emit(TOKEN.WORD, word)
+
+            -- Single-quoted string: completely literal, no expansion.
+        elseif ch == "'" then
+            consume()
+            local word = ""
+            while index <= length do
+                local inner = consume()
+                if inner == "'" then break end
+                word = word .. inner
+            end
+            emit(TOKEN.WORD, word)
+
+            -- Backslash: escape the next character outside of quotes.
+        elseif ch == "\\" then
+            consume()
+            if index <= length then
+                emit(TOKEN.WORD, consume())
+            end
+
+            -- Pipe operator.
+        elseif ch == "|" then
+            consume()
+            emit(TOKEN.PIPE, "|")
+
+            -- Background or logical AND (simplified: just & for now).
+        elseif ch == "&" then
+            consume()
+            emit(TOKEN.AMPERSAND, "&")
+
+            -- Semicolon command separator.
+        elseif ch == ";" then
+            consume()
+            emit(TOKEN.SEMICOLON, ";")
+
+            -- Redirect operators: >> or > or <
+        elseif ch == ">" then
+            consume()
+            if peek() == ">" then
+                consume()
+                emit(TOKEN.REDIR_APPEND, ">>")
+            else
+                emit(TOKEN.REDIR_OUT, ">")
+            end
+        elseif ch == "<" then
+            consume()
+            emit(TOKEN.REDIR_IN, "<")
+
+            -- Comments: # to end of line.
+        elseif ch == "#" then
+            break
+
+            -- Bare word: read until a delimiter character.
+        else
+            local word = ""
+            while index <= length do
+                local next_ch = peek()
+                if next_ch == " " or next_ch == "\t"
+                    or next_ch == "|" or next_ch == "&"
+                    or next_ch == ";" or next_ch == ">"
+                    or next_ch == "<" or next_ch == '"'
+                    or next_ch == "'" or next_ch == "#"
+                then
+                    break
+                end
+                word = word .. consume()
+            end
+            emit(TOKEN.WORD, word)
+        end
+    end
+
+    emit(TOKEN.EOF, nil)
+    return tokens
+end
+
+return tokenizer
+manifest.lua
+890
+-- manifest.lua
+return {
+    format = "sxpkg-1",
+    meta = {
+        name        = "bsh",
+        version     = "1.0.0",
+        author      = "SwirX",
+        description = "SXOS bsh package",
+        channel     = "stable",
+    },
+    dependencies = {},
+    files = {
+        { path = "/bin/bsh.lua",           source = "bin/bsh.lua",          executable = true },
+        { path = "/lib/sh/builtins.lua",   source = "lib/sh/builtins.lua" },
+        { path = "/lib/sh/completion.lua", source = "lib/sh/completion.lua" },
+        { path = "/lib/sh/execute.lua",    source = "lib/sh/execute.lua" },
+        { path = "/lib/sh/expand.lua",     source = "lib/sh/expand.lua" },
+        { path = "/lib/sh/parser.lua",     source = "lib/sh/parser.lua" },
+        { path = "/lib/sh/tokenizer.lua",  source = "lib/sh/tokenizer.lua" },
+    },
+    integrity = {
+        sha256 = "FILL_ME",
+    },
+}

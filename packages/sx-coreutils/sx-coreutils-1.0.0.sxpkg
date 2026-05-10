@@ -1,0 +1,46 @@
+SXP1
+manifest.lua
+2639
+-- manifest.lua
+return {
+    format = "sxpkg-1",
+    meta = {
+        name        = "sx-coreutils",
+        version     = "1.0.0",
+        author      = "SwirX",
+        description = "SXOS sx-coreutils package",
+        channel     = "stable",
+    },
+    dependencies = {},
+    files = {
+        { path = "/bin/cat.lua",      source = "bin/cat.lua",      executable = true },
+        { path = "/bin/cd.lua",       source = "bin/cd.lua",       executable = true },
+        { path = "/bin/chmod.lua",    source = "bin/chmod.lua",    executable = true },
+        { path = "/bin/chown.lua",    source = "bin/chown.lua",    executable = true },
+        { path = "/bin/clear.lua",    source = "bin/clear.lua",    executable = true },
+        { path = "/bin/cp.lua",       source = "bin/cp.lua",       executable = true },
+        { path = "/bin/echo.lua",     source = "bin/echo.lua",     executable = true },
+        { path = "/bin/env.lua",      source = "bin/env.lua",      executable = true },
+        { path = "/bin/jobs.lua",     source = "bin/jobs.lua",     executable = true },
+        { path = "/bin/kill.lua",     source = "bin/kill.lua",     executable = true },
+        { path = "/bin/ln.lua",       source = "bin/ln.lua",       executable = true },
+        { path = "/bin/ls.lua",       source = "bin/ls.lua",       executable = true },
+        { path = "/bin/mkcd.lua",     source = "bin/mkcd.lua",     executable = true },
+        { path = "/bin/mkdir.lua",    source = "bin/mkdir.lua",    executable = true },
+        { path = "/bin/mount.lua",    source = "bin/mount.lua",    executable = true },
+        { path = "/bin/mv.lua",       source = "bin/mv.lua",       executable = true },
+        { path = "/bin/printf.lua",   source = "bin/printf.lua",   executable = true },
+        { path = "/bin/ps.lua",       source = "bin/ps.lua",       executable = true },
+        { path = "/bin/pwd.lua",      source = "bin/pwd.lua",      executable = true },
+        { path = "/bin/reboot.lua",   source = "bin/reboot.lua",   executable = true },
+        { path = "/bin/rm.lua",       source = "bin/rm.lua",       executable = true },
+        { path = "/bin/shutdown.lua", source = "bin/shutdown.lua", executable = true },
+        { path = "/bin/touch.lua",    source = "bin/touch.lua",    executable = true },
+        { path = "/bin/umount.lua",   source = "bin/umount.lua",   executable = true },
+        { path = "/bin/which.lua",    source = "bin/which.lua",    executable = true },
+        { path = "/bin/pastebin.lua", source = "bin/pastebin.lua", executable = true },
+    },
+    integrity = {
+        sha256 = "FILL_ME",
+    },
+}

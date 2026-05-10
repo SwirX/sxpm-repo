@@ -1,0 +1,26 @@
+SXP1
+manifest.lua
+829
+-- manifest.lua
+return {
+    format = "sxpkg-1",
+    meta = {
+        name        = "sx-devtools",
+        version     = "1.0.0",
+        author      = "SwirX",
+        description = "SXOS sx-devtools package",
+        channel     = "stable",
+    },
+    dependencies = {},
+    files = {
+        { path = "/bin/diff.lua", source = "bin/diff.lua", executable = true },
+        { path = "/bin/find.lua", source = "bin/find.lua", executable = true },
+        { path = "/bin/git.lua",  source = "bin/git.lua",  executable = true },
+        { path = "/bin/grep.lua", source = "bin/grep.lua", executable = true },
+        { path = "/bin/help.lua", source = "bin/help.lua", executable = true },
+        { path = "/bin/lua.lua",  source = "bin/lua.lua",  executable = true },
+    },
+    integrity = {
+        sha256 = "FILL_ME",
+    },
+}

@@ -1,0 +1,28 @@
+SXP1
+manifest.lua
+537
+-- manifest.lua
+return {
+    format = "sxpkg-1",
+    meta = {
+        name         = "sxos-desktop",
+        version      = "1.0.0",
+        author       = "SwirX",
+        description  = "Desktop SXOS installation meta-package",
+        channel      = "stable",
+        package_type = "meta",
+    },
+    dependencies = {
+        "bsh",
+        "sx-coreutils",
+        "sx-netutils",
+        "sx-devtools",
+        "sxui",
+        "sxos-core",
+        "sxpm"
+    },
+    files = {},
+    integrity = {
+        sha256 = "FILL_ME",
+    },
+}

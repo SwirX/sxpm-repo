@@ -1,0 +1,27 @@
+SXP1
+manifest.lua
+965
+-- manifest.lua
+return {
+    format = "sxpkg-1",
+    meta = {
+        name        = "sx-netutils",
+        version     = "1.0.0",
+        author      = "SwirX",
+        description = "SXOS sx-netutils package",
+        channel     = "stable",
+    },
+    dependencies = {},
+    files = {
+        { path = "/bin/curl.lua",     source = "bin/curl.lua",     executable = true },
+        { path = "/bin/discover.lua", source = "bin/discover.lua", executable = true },
+        { path = "/bin/netstat.lua",  source = "bin/netstat.lua",  executable = true },
+        { path = "/bin/ping.lua",     source = "bin/ping.lua",     executable = true },
+        { path = "/bin/wget.lua",     source = "bin/wget.lua",     executable = true },
+        { path = "/bin/rednet.lua",   source = "bin/rednet.lua",   executable = true },
+        { path = "/bin/speaker.lua",  source = "bin/speaker.lua",  executable = true },
+    },
+    integrity = {
+        sha256 = "FILL_ME",
+    },
+}

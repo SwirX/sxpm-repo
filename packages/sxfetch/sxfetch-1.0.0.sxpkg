@@ -1,0 +1,98 @@
+SXP1
+bin/sxfetch.lua
+2243
+local w, h = term.getSize()
+local host = _ENV.ENV and _ENV.ENV.HOSTNAME or "sxos"
+local user = _ENV.ENV and _ENV.ENV.USER or "root"
+local shellPath = _ENV.ENV and _ENV.ENV.SHELL or "/bin/bsh"
+
+local os_name = "SXOS"
+local os_version = "Unknown"
+
+if fs.exists("/etc/os-release") then
+    local f = fs.open("/etc/os-release", "r")
+    if f then
+        for line in f.readLine do
+            if string.match(line, "^NAME=\"?(.-)\"?$") then
+                os_name = string.match(line, "^NAME=\"?(.-)\"?$")
+            elseif string.match(line, "^VERSION=\"?(.-)\"?$") then
+                os_version = string.match(line, "^VERSION=\"?(.-)\"?$")
+            end
+        end
+        f.close()
+    end
+end
+
+local lines = {
+    user .. "@" .. host,
+    "---------------",
+    "OS: " .. os_name .. " " .. os_version,
+    "Kernel: SX Kernel",
+    "Uptime: " .. math.floor(os.clock()) .. "s",
+    "Shell: " .. shellPath,
+    "Resolution: " .. w .. "x" .. h,
+    "Lua Version: " .. _VERSION
+}
+
+local logo = {
+    "    .--------.  ",
+    "   / .------'   ",
+    "   | |___       ",
+    "   `--.. `.     ",
+    "       | |      ",
+    "   .---' /      ",
+    "   `----'       "
+}
+
+print()
+for i = 1, math.max(#logo, #lines) do
+    term.setTextColor(colors.cyan)
+    if i <= #logo then
+        write(logo[i])
+    else
+        write(string.rep(" ", #logo[1] or 16))
+    end
+
+    term.setTextColor(colors.white)
+    if i <= #lines then
+        if i == 1 then term.setTextColor(colors.yellow) end
+        write(lines[i])
+    end
+    print()
+end
+
+print()
+term.setTextColor(colors.white)
+
+if term.isColor and term.isColor() then
+    local c1 = { colors.red, colors.orange, colors.yellow, colors.green, colors.cyan, colors.lightBlue, colors.blue,
+        colors.magenta }
+    local c2 = { colors.pink, colors.lime, colors.black, colors.gray, colors.lightGray, colors.white, colors.brown,
+        colors.purple }
+    local width = #logo[1] or 16
+    write(string.rep(" ", width))
+    for _, c in ipairs(c1) do
+        term.setBackgroundColor(c); write("   ")
+    end; print()
+    write(string.rep(" ", width))
+    for _, c in ipairs(c2) do
+        term.setBackgroundColor(c); write("   ")
+    end; print()
+    term.setBackgroundColor(colors.black)
+    print()
+end
+manifest.lua
+333
+return {
+    format = "sxpkg-1",
+    meta = {
+        name = "sxfetch",
+        version = "1.0.0",
+        package_type = "application",
+        description = "System info fetch tool",
+    },
+    binaries = { "sxfetch" },
+    files = {
+        { path = "/usr/bin/sxfetch.lua", source = "bin/sxfetch.lua", executable = true }
+    }
+}

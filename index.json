@@ -14,8 +14,8 @@
             },
             "2.0.2": {
                 "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sxos-core/sxos-core-2.0.2.sxpkg",
-                "sha256": "30d03932924cfc1c4c02c2dfffc2220de41815fa088f002be9706c810104d466",
-                "size": 148898
+                "sha256": "e49d53203d2f26235b5444ff3e22e484b338cda1767d75338d5c4cbff1df6aee",
+                "size": 70540
             }
         }
     },
@@ -30,12 +30,117 @@
         }
     },
     "sxmusic": {
-        "latest": "1.0.0",
+        "latest": "1.0.1",
         "versions": {
             "1.0.0": {
                 "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sxmusic/sxmusic-1.0.0.sxpkg",
                 "sha256": "a2be2f239c7709701fe91feedf74a1b57a8701e54aba4981b4ac1b60c1a6595b",
                 "size": 59178
+            },
+            "1.0.1": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sxmusic/sxmusic-1.0.1.sxpkg",
+                "sha256": "ba75d8b571abc2d9e9946bd3e4e02b9067941f08bd1050915a11fc72941a74fb",
+                "size": 59178
+            }
+        }
+    },
+    "sxos-minimal": {
+        "latest": "1.0.0",
+        "versions": {
+            "1.0.0": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sxos-minimal/sxos-minimal-1.0.0.sxpkg",
+                "sha256": "10fd1f880cbefb10944e86f940eeace839e2c898d915904f1d9ae03f858a2a51",
+                "size": 476
+            }
+        }
+    },
+    "yate": {
+        "latest": "1.0.0",
+        "versions": {
+            "1.0.0": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/yate/yate-1.0.0.sxpkg",
+                "sha256": "a929b1c9c7fc57ff940a6bc140cf96509c42ba2bca28009e27eddc4a3eae9dd9",
+                "size": 14827
+            }
+        }
+    },
+    "sxos-desktop": {
+        "latest": "1.0.0",
+        "versions": {
+            "1.0.0": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sxos-desktop/sxos-desktop-1.0.0.sxpkg",
+                "sha256": "50cf21f8aad8b7b44b3100e067730ad43026bd26cae6ff81d207445c911056b5",
+                "size": 559
+            }
+        }
+    },
+    "sx-netutils": {
+        "latest": "1.0.0",
+        "versions": {
+            "1.0.0": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sx-netutils/sx-netutils-1.0.0.sxpkg",
+                "sha256": "35224f19e8dcc17e3d4ecfed8876c6e7aa58e4965a8d8013060b20bf8ce5bff3",
+                "size": 987
+            }
+        }
+    },
+    "sxfetch": {
+        "latest": "1.0.0",
+        "versions": {
+            "1.0.0": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sxfetch/sxfetch-1.0.0.sxpkg",
+                "sha256": "b74e87badf5bd5efbc5e6ecc7ca9f45f227f055f5657af901d327e9fe2253f90",
+                "size": 2619
+            }
+        }
+    },
+    "bsh": {
+        "latest": "1.0.0",
+        "versions": {
+            "1.0.0": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/bsh/bsh-1.0.0.sxpkg",
+                "sha256": "9d0650ddeff5ba8de6ffbab15aa0bb9410759fa12203b79b190f1774699f11cd",
+                "size": 25638
+            }
+        }
+    },
+    "sx-coreutils": {
+        "latest": "1.0.0",
+        "versions": {
+            "1.0.0": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sx-coreutils/sx-coreutils-1.0.0.sxpkg",
+                "sha256": "39760572dff8e03e35c61da3bb07ebdb1264919cd220bf5e31d717f5c82234ad",
+                "size": 2662
+            }
+        }
+    },
+    "yafe": {
+        "latest": "1.0.0",
+        "versions": {
+            "1.0.0": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/yafe/yafe-1.0.0.sxpkg",
+                "sha256": "bc5e34eb951bff7235dc7475a949891221fe5b0567a88445659a3336a0f8cb2b",
+                "size": 5098
+            }
+        }
+    },
+    "sxpm": {
+        "latest": "1.0.0",
+        "versions": {
+            "1.0.0": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sxpm/sxpm-1.0.0.sxpkg",
+                "sha256": "5f0c9d3635bbea65ae4a0442c284e145115b830a3dd01f041d5bd6ecb181ee13",
+                "size": 38041
+            }
+        }
+    },
+    "sx-devtools": {
+        "latest": "1.0.0",
+        "versions": {
+            "1.0.0": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sx-devtools/sx-devtools-1.0.0.sxpkg",
+                "sha256": "0b435e17c3a27c30cdb5e372e26ecfa4803ec0b23c9c8329c85fdd8805798de6",
+                "size": 851
             }
         }
     }

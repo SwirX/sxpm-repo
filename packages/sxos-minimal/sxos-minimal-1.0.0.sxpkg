@@ -1,0 +1,20 @@
+SXP1
+manifest.lua
+454
+-- manifest.lua
+return {
+    format = "sxpkg-1",
+    meta = {
+        name         = "sxos-minimal",
+        version      = "1.0.0",
+        author       = "SwirX",
+        description  = "Minimal SXOS installation meta-package",
+        channel      = "stable",
+        package_type = "meta",
+    },
+    dependencies = { "sxos-core", "bsh", "sx-coreutils", "sx-netutils", "sxpm" },
+    files = {},
+    integrity = {
+        sha256 = "FILL_ME",
+    },
+}
