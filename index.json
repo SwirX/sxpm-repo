@@ -109,8 +109,8 @@
         "versions": {
             "1.0.0": {
                 "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/bsh/bsh-1.0.0.sxpkg",
-                "sha256": "9d0650ddeff5ba8de6ffbab15aa0bb9410759fa12203b79b190f1774699f11cd",
-                "size": 25638
+                "sha256": "dcb71fa54d46645910b6dce3b160fea57eb74c1b7d89f6e6191aadf0c1bf60de",
+                "size": 46707
             }
         }
     },
