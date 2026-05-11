@@ -2521,7 +2521,7 @@ end
 
 print("sxos-core: post-install complete.")
 manifest.lua
-3449
+3387
 -- manifest.lua
 -- Package manifest for sxos-core.
 -- This is the canonical descriptor for the SXOS core operating system package.
@@ -2595,8 +2595,6 @@ return {
 
         -- Services
         { path = "/services/discoverd.lua",            source = "services/discoverd.lua" },
-
-        -- User binaries moved to standalone packages
     },
 
     lifecycle = {
@@ -2604,6 +2602,6 @@ return {
     },
 
     integrity = {
-        sha256 = "FILL_ME",
+        sha256 = "",
     },
 }
