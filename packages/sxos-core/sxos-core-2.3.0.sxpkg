@@ -1,0 +1,2679 @@
+SXP1
+boot/loader.lua
+4202
+-- SXOS Custom Bootloader
+local configPath = "/.config/sxboot/config.lua"
+
+local config = {
+    default_entry = 2,
+    timeout = 2,
+    hidden = false,
+    colors = {
+        background = colors.gray,
+        box_bg = colors.black,
+        text = colors.lightGray,
+        selected_bg = colors.cyan,
+        selected_text = colors.white,
+        title = colors.white,
+        border = colors.lightGray
+    }
+}
+
+if fs.exists(configPath) then
+    local loadedConfig = dofile(configPath)
+    if type(loadedConfig) == "table" then
+        for k, v in pairs(loadedConfig) do
+            if type(v) == "table" and type(config[k]) == "table" then
+                for ik, iv in pairs(v) do config[k][ik] = iv end
+            else
+                config[k] = v
+            end
+        end
+    end
+end
+
+local entries = {
+    "CraftOS Native",
+    "SXOS"
+}
+
+if config.hidden then
+    if config.default_entry == 2 then
+        shell.run("/sys/kernel.lua")
+    end
+    return
+end
+
+local selected = config.default_entry
+local w, h = term.getSize()
+local timer = os.startTimer(config.timeout)
+local timeoutRemaining = config.timeout
+
+local boxW = 30
+local boxH = #entries + 4
+local boxX = math.floor((w - boxW) / 2) + 1
+local boxY = math.floor((h - boxH) / 2) + 1
+
+local function drawMenu()
+    term.setBackgroundColor(config.colors.background)
+    term.clear()
+
+    -- Draw shadow
+    term.setBackgroundColor(colors.gray)
+    for i = 1, boxH do
+        term.setCursorPos(boxX + 1, boxY + i)
+        term.write(string.rep(" ", boxW))
+    end
+
+    -- Draw central box
+    term.setBackgroundColor(config.colors.box_bg)
+    for i = 1, boxH do
+        term.setCursorPos(boxX, boxY + i - 1)
+        term.write(string.rep(" ", boxW))
+    end
+
+    -- Title
+    local title = " SX BOOTLOADER "
+    term.setCursorPos(boxX + math.floor((boxW - #title) / 2), boxY)
+    term.setTextColor(config.colors.title)
+    term.write(title)
+
+    -- Border/accent line
+    term.setCursorPos(boxX + 2, boxY + 1)
+    term.setTextColor(config.colors.selected_bg)
+    term.write(string.rep("-", boxW - 4))
+
+    -- Entries
+    local menuY = boxY + 2
+    for i, entry in ipairs(entries) do
+        term.setCursorPos(boxX + 2, menuY + i - 1)
+        if i == selected then
+            term.setBackgroundColor(config.colors.selected_bg)
+            term.setTextColor(config.colors.selected_text)
+            term.write(" " .. entry .. string.rep(" ", boxW - 5 - #entry) .. ">")
+        else
+            term.setBackgroundColor(config.colors.box_bg)
+            term.setTextColor(config.colors.text)
+            term.write(" " .. entry .. string.rep(" ", boxW - 4 - #entry))
+        end
+    end
+
+    -- Footer info
+    term.setBackgroundColor(config.colors.background)
+    term.setTextColor(config.colors.text)
+    term.setCursorPos(1, h)
+    term.clearLine()
+
+    if timeoutRemaining > 0 then
+        term.setCursorPos(boxX + math.floor((boxW - 18) / 2), boxY + boxH)
+        term.setTextColor(colors.white)
+        term.setBackgroundColor(config.colors.background)
+        term.write("Default in " .. math.ceil(timeoutRemaining) .. "s...")
+    end
+end
+
+drawMenu()
+
+while true do
+    local event, p1, p2, p3 = os.pullEvent()
+
+    if event == "key" then
+        if p1 == keys.up then
+            selected = selected - 1
+            if selected < 1 then selected = #entries end
+            timeoutRemaining = 0
+            drawMenu()
+        elseif p1 == keys.down then
+            selected = selected + 1
+            if selected > #entries then selected = 1 end
+            timeoutRemaining = 0
+            drawMenu()
+        elseif p1 == keys.enter then
+            break
+        end
+    elseif event == "timer" and p1 == timer and timeoutRemaining > 0 then
+        timeoutRemaining = timeoutRemaining - 1
+        if timeoutRemaining <= 0 then
+            break
+        else
+            timer = os.startTimer(1)
+            drawMenu()
+        end
+    end
+end
+
+term.setBackgroundColor(colors.black)
+term.setTextColor(colors.white)
+term.clear()
+term.setCursorPos(1, 1)
+
+if selected == 1 then
+    print("Executing native CraftOS...")
+    return
+elseif selected == 2 then
+    print("Initialize SXOS environment...")
+    shell.run("/sys/kernel.lua")
+end
+bin/sh.lua
+1413
+-- /bin/sh.lua
+-- SXOS Minimal Native Shell App
+-- Provided as a fallback when no standard shell (like bsh) is configured or accessible.
+
+local _ENV = setmetatable({}, { __index = _ENV })
+local shell_env = _ENV
+
+while true do
+    term.setTextColor(colors.green)
+    write((shell_env.USER or "unknown") .. "@sxos")
+    term.setTextColor(colors.white)
+    write(":/$ ")
+
+    local input = read()
+    if input and input ~= "" then
+        local words = {}
+        for w in input:gmatch("%S+") do table.insert(words, w) end
+        local prog = table.remove(words, 1)
+
+        local resolved
+        for _, path in ipairs({ "/bin/", "/usr/bin/", "" }) do
+            for _, ext in ipairs({ ".lua", "" }) do
+                local candidate = path .. prog .. ext
+                if fs.exists(candidate) and not fs.isDir(candidate) then
+                    resolved = candidate
+                    break
+                end
+            end
+            if resolved then break end
+        end
+
+        if resolved then
+            local fn, err = loadfile(resolved, "t", _ENV)
+            if fn then
+                local ok, run_err = pcall(fn, table.unpack(words))
+                if not ok and run_err then printError(run_err) end
+            else
+                printError("Failed to load: " .. tostring(err))
+            end
+        else
+            printError(prog .. ": command not found")
+        end
+    end
+end
+startup.lua
+332
+-- File: startup.lua
+-- Author: SXOS
+-- Description: Entry point for the SXOS boot sequence.
+
+-- Defer immediately to the bootloader.
+local bootloaderPath = "/boot/loader.lua"
+
+if not fs.exists(bootloaderPath) then
+    error("SXOS Bootloader missing: " .. bootloaderPath, 0)
+end
+
+-- Execute the bootloader
+shell.run(bootloaderPath)
+etc/skel/config/sxboot/config.lua
+538
+-- SXBoot Configuration File
+return {
+    -- Default boot entry index: 1 = CraftOS, 2 = SXOS
+    default_entry = 2,
+
+    -- Timeout in seconds before booting the default entry (0 to disable)
+    timeout = 3,
+
+    -- Whether to hide the menu completely. If true, boots default immediately.
+    hidden = false,
+
+    -- Colors for the bootloader UI
+    colors = {
+        background = colors.black,
+        text = colors.lightGray,
+        selected_bg = colors.gray,
+        selected_text = colors.white,
+        title = colors.blue
+    }
+}
+sys/kernel.lua
+6972
+-- /sys/kernel.lua
+-- SXOS Kernel: Stages 2-6 of the boot sequence.
+-- Stage 2: Load core libraries and initialize the event router.
+-- Stage 3: Mount virtual filesystems (/dev, /net) via the VFS layer.
+-- Stage 4: Start background services (discoverd).
+-- Stage 5: Authenticate the user via the auth module.
+-- Stage 6: Spawn the shell process and drive the main event loop.
+
+local function load_lib(path)
+    local chunk, err = loadfile(path)
+    if not chunk then
+        error("Kernel: failed to load " .. path .. ": " .. tostring(err), 0)
+    end
+    return chunk()
+end
+
+-- Stage 2: Core library initialization.
+local log     = load_lib("/lib/core/log.lua")
+local env_lib = load_lib("/lib/core/env.lua")
+local events  = load_lib("/lib/core/events.lua")
+local device  = load_lib("/lib/core/device.lua")
+local proc    = load_lib("/lib/core/process.lua")
+local svc     = load_lib("/lib/core/service.lua")
+local vfs     = load_lib("/lib/fs/vfs.lua")
+local auth    = load_lib("/sys/auth.lua")
+
+-- Initialize device registry immediately tracking peripherals
+device.init(events)
+
+log.info("kernel", "Stage 2 complete: core libraries loaded")
+
+-- Stage 3: Mount virtual filesystems.
+vfs.mount_builtin_drivers(device)
+log.info("kernel", "Stage 3 complete: VFS mounted")
+
+-- Process fstab auto-mounts
+local fstab_path = "/etc/sxos/fstab.lua"
+if fs.exists(fstab_path) then
+    local ok, fstab = pcall(load_lib, fstab_path)
+    if ok and fstab.auto_mount and fstab.devices then
+        for _, entry in ipairs(fstab.devices) do
+            for _, dev in pairs(device.get_all()) do
+                if dev.type == entry.peripheral and not dev.mounted then
+                    device.mount(dev.id, entry.path)
+                    break
+                end
+            end
+        end
+        log.info("kernel", "Stage 3.5: Processed " .. tostring(#fstab.devices) .. " fstab device mounts")
+    end
+end
+
+-- Stage 4: Start background services.
+-- discoverd makes this host visible on the network to other SXOS machines.
+local discoverd_path = "/services/discoverd.lua"
+if fs.exists(discoverd_path) then
+    local discovery_lib = load_lib("/lib/net/discovery.lua")
+    if discovery_lib.init then discovery_lib.init(device) end
+    local discoverd_pid = proc.spawn(function()
+        discovery_lib.run_responder()
+    end, { name = "discoverd", cwd = "/" })
+    svc.register("discoverd", discoverd_pid, {})
+    log.info("kernel", "Stage 4: discoverd started (pid=" .. discoverd_pid .. ")")
+else
+    log.warn("kernel", "Stage 4: discoverd not found, skipping")
+end
+
+log.info("kernel", "Stage 4 complete: services up")
+
+-- Stage 5: Login and user resolution.
+local username, userinfo = auth.do_login()
+if not userinfo then
+    log.fatal("kernel", "Stage 5: login failed for '" .. tostring(username) .. "'")
+end
+log.info("kernel", "Stage 5 complete: user=" .. username)
+
+-- Stage 6: Build the shell process environment and launch bsh.
+local system_config      = auth.read_config()
+
+local shell_env          = env_lib.create_process_env(_ENV, {
+    PATH     = "/bin:/usr/bin",
+    HOME     = userinfo.home,
+    USER     = username,
+    SHELL    = userinfo.shell or "/bin/bsh.lua",
+    TERM     = "sxos",
+    PWD      = userinfo.home,
+    HOSTNAME = os.getComputerLabel() or ("sxos-" .. os.getComputerID()),
+})
+shell_env.INSTALLER_MODE = system_config.installer_shell or false
+
+-- Extend Lua module search path so sxpm-installed packages are requireable.
+-- Format: /lib/?.lua;/lib/?/init.lua plus per-package subdirs.
+local LIB_PATHS          = {
+    "/lib/?.lua",
+    "/lib/?/init.lua",
+    "/lib/sxui/?.lua",
+    "/lib/sxmusic/?.lua",
+    "/lib/core/?.lua",
+    "/lib/fs/?.lua",
+    "/lib/sh/?.lua",
+    "/lib/net/?.lua",
+    "/lib/sx/?.lua",
+    "/lib/ui/?.lua",
+    "/usr/lib/?.lua",
+}
+-- Prepend our paths; keep whatever CraftOS already has at the end.
+local base_path          = package and package.path or ""
+shell_env.package        = shell_env.package or {}
+shell_env.package.path   = table.concat(LIB_PATHS, ";") .. (base_path ~= "" and (";" .. base_path) or "")
+
+-- Inject the sx.* API surface and the VFS into the shell environment.
+-- Binaries get sx by loading /lib/core/sx.lua from their own code.
+-- The shell itself gets direct references for performance.
+shell_env.sx_vfs         = vfs
+shell_env.sx_proc        = proc
+shell_env.sx_events      = events
+shell_env.sx_service     = svc
+shell_env.sx_log         = log
+shell_env.peripheral     = load_lib("/lib/compat/peripheral.lua")
+
+if system_config.enable_vfs then
+    local sx_perms = load_lib("/lib/sx/vfs.lua")
+    sx_perms.init()
+    shell_env.fs = sx_perms.create_fs(username)
+    shell_env.sx_perms = sx_perms
+end
+
+local shell_path = userinfo.shell or "/bin/bsh.lua"
+local shell_fn
+if not fs.exists(shell_path) then
+    log.warn("kernel", "Stage 6: shell '" .. shell_path .. "' not found. Launching fallback TTY shell.")
+    shell_path = "/bin/sh.lua"
+    if not fs.exists(shell_path) then
+        log.fatal("kernel", "Stage 6: Fallback shell missing!")
+    end
+    local fn, load_err = loadfile(shell_path, "t", shell_env)
+    if not fn then
+        log.fatal("kernel", "Stage 6: failed to load shell: " .. tostring(load_err))
+    end
+    shell_fn = fn
+else
+    local fn, load_err = loadfile(shell_path, "t", shell_env)
+    if not fn then
+        log.fatal("kernel", "Stage 6: failed to load shell: " .. tostring(load_err))
+    end
+    shell_fn = fn
+end
+
+log.info("kernel", "Stage 6: launching shell")
+
+term.setBackgroundColor(colors.black)
+term.setTextColor(colors.lightGray)
+term.clear()
+term.setCursorPos(1, 1)
+
+-- Main kernel event loop.
+-- The kernel owns os.pullEvent and dispatches each event to:
+--   1. The event router (for all subscribers)
+--   2. The process scheduler (for all coroutines)
+while true do
+    -- Spawn the shell as a tracked process.
+    local shell_pid = proc.spawn(shell_fn, {
+        name = "bsh",
+        env  = shell_env,
+        cwd  = userinfo.home,
+    })
+
+    log.info("kernel", "Shell started with pid=" .. shell_pid)
+
+    while proc.get(shell_pid) do
+        local event_packet = table.pack(os.pullEventRaw())
+        events.dispatch(event_packet)
+        proc.tick(event_packet)
+    end
+
+    log.warn("kernel", "Shell process died unexpectedly.")
+    printError("\n[KERNEL PANIC] Shell process terminated!")
+    printError("Re-launching shell in 3 seconds. Press Ctrl+T to abort and reboot.")
+
+    local timer = os.startTimer(3)
+    local abort = false
+    while true do
+        local e, p1 = os.pullEventRaw()
+        if e == "timer" and p1 == timer then
+            break
+        elseif e == "terminate" then
+            abort = true
+            break
+        end
+        -- Keep ticking other processes
+        local packet = table.pack(e, p1)
+        events.dispatch(packet)
+        proc.tick(packet)
+    end
+
+    if abort then
+        break
+    end
+    -- Otherwise, loops back and respawns
+end
+
+printError("\n[KERNEL] System halted. Rebooting...")
+os.sleep(1)
+os.reboot()
+sys/env.lua
+725
+-- /sys/env.lua
+-- Process environment façade for the SXOS installer tools.
+-- This file is intentionally loaded via dofile() by the advanced installer,
+-- so it must NOT call require() at the module level (package.path is not yet
+-- configured at that point).  All dependencies are loaded with loadfile().
+
+local _M = {}
+
+-- Load the canonical implementation from lib/core/env.lua.
+local core_env_chunk, err = loadfile("/lib/core/env.lua")
+if not core_env_chunk then
+    error("sys/env.lua: cannot load /lib/core/env.lua: " .. tostring(err), 0)
+end
+local core_env = core_env_chunk()
+
+-- Re-export create_process_env so callers can use this file transparently.
+_M.create_process_env = core_env.create_process_env
+
+return _M
+sys/auth.lua
+2170
+local _M = {}
+
+function _M.read_config()
+    if fs.exists("/etc/sxos/config.lua") then
+        local content = fs.open("/etc/sxos/config.lua", "r")
+        if content then
+            local data = textutils.unserialize(content.readAll())
+            content.close()
+            return data or {}
+        end
+    end
+    return {}
+end
+
+function _M.read_users()
+    local users = {}
+    if fs.exists("/etc/sxos/users") then
+        local content = fs.open("/etc/sxos/users", "r")
+        if content then
+            users = textutils.unserialize(content.readAll()) or {}
+            content.close()
+        end
+    end
+
+    if not users["root"] then
+        users["root"] = {
+            home = "/root",
+            shell = "/bin/bsh.lua",
+            groups = { "admin", "users" }
+        }
+    end
+    return users
+end
+
+function _M.read_shadow()
+    local shadow = {}
+    if fs.exists("/etc/sxos/shadow") then
+        local content = fs.open("/etc/sxos/shadow", "r")
+        if content then
+            shadow = textutils.unserialize(content.readAll()) or {}
+            content.close()
+        end
+    end
+
+    if not shadow["root"] then
+        shadow["root"] = "sxos"
+    end
+    return shadow
+end
+
+function _M.authenticate(user, pass)
+    local shadow = _M.read_shadow()
+    if shadow[user] and shadow[user] == pass then
+        return true
+    end
+    return false
+end
+
+function _M.do_login()
+    local config = _M.read_config()
+    local users = _M.read_users()
+
+    if config.autologin and config.autologin_user then
+        if users[config.autologin_user] then
+            return config.autologin_user, users[config.autologin_user]
+        end
+    end
+
+    -- Prompt for login
+    while true do
+        term.setTextColor(colors.white)
+        term.setBackgroundColor(colors.black)
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("SXOS Login")
+        write("login: ")
+        local user = read()
+        write("password: ")
+        local pass = read("*")
+
+        if _M.authenticate(user, pass) then
+            return user, users[user]
+        else
+            print("Login incorrect")
+            sleep(2)
+        end
+    end
+end
+
+return _M
+lib/core/log.lua
+2844
+-- /lib/core/log.lua
+-- Centralized system logger for SXOS.
+-- Writes structured log entries to /var/log/ and optionally to a terminal.
+-- Severity levels: DEBUG, INFO, WARN, ERROR, FATAL
+
+local log = {}
+
+local LOG_DIR = "/var/log"
+local LOG_FILE = LOG_DIR .. "/sxos.log"
+local MAX_LOG_BYTES = 64 * 1024 -- 64 KB rolling cap before rotation
+
+local LEVEL_WEIGHT = {
+    DEBUG = 1,
+    INFO  = 2,
+    WARN  = 3,
+    ERROR = 4,
+    FATAL = 5,
+}
+
+-- Minimum severity that gets written to disk. Can be changed at runtime.
+local current_min_level = "INFO"
+
+local function ensure_log_dir()
+    if not fs.exists(LOG_DIR) then
+        fs.makeDir(LOG_DIR)
+    end
+end
+
+-- Rotate the log file if it has grown beyond the size cap.
+local function rotate_if_needed()
+    if fs.exists(LOG_FILE) and fs.getSize(LOG_FILE) >= MAX_LOG_BYTES then
+        local rotated = LOG_FILE .. ".1"
+        if fs.exists(rotated) then fs.delete(rotated) end
+        fs.move(LOG_FILE, rotated)
+    end
+end
+
+local function format_entry(level, source, message)
+    -- Produces: [HH:MM:SS] [LEVEL] [source] message
+    local timestamp = os.time()
+    local t = string.format("%02d:%02d:%02d",
+        math.floor(timestamp / 3600) % 24,
+        math.floor(timestamp / 60) % 60,
+        math.floor(timestamp) % 60
+    )
+    return string.format("[%s] [%s] [%s] %s\n", t, level, source, message)
+end
+
+local function write_entry(level, source, message)
+    if (LEVEL_WEIGHT[level] or 0) < (LEVEL_WEIGHT[current_min_level] or 0) then
+        return
+    end
+    ensure_log_dir()
+    rotate_if_needed()
+    local handle = fs.open(LOG_FILE, "a")
+    if handle then
+        handle.write(format_entry(level, source, message))
+        handle.close()
+    end
+end
+
+function log.debug(source, message) write_entry("DEBUG", source, message) end
+
+function log.info(source, message) write_entry("INFO", source, message) end
+
+function log.warn(source, message) write_entry("WARN", source, message) end
+
+function log.error(source, message) write_entry("ERROR", source, message) end
+
+-- FATAL logs the message then halts the OS with a kernel panic message.
+function log.fatal(source, message)
+    write_entry("FATAL", source, message)
+    error("[SXOS FATAL] " .. source .. ": " .. message, 0)
+end
+
+-- Set the minimum level written to disk at runtime.
+function log.set_min_level(level)
+    assert(LEVEL_WEIGHT[level], "log: invalid level: " .. tostring(level))
+    current_min_level = level
+end
+
+-- Read all current log entries as a list of strings.
+function log.read()
+    if not fs.exists(LOG_FILE) then return {} end
+    local handle = fs.open(LOG_FILE, "r")
+    if not handle then return {} end
+    local lines = {}
+    local line = handle.readLine()
+    while line do
+        table.insert(lines, line)
+        line = handle.readLine()
+    end
+    handle.close()
+    return lines
+end
+
+return log
+lib/core/env.lua
+6227
+-- /lib/core/env.lua
+-- Environment management for SXOS process contexts.
+-- Each process runs inside an isolated environment table that inherits from
+-- the kernel's global environment. This prevents userspace from polluting
+-- the kernel's namespace while still allowing access to CC globals.
+
+local env = {}
+
+-- Creates a sandboxed process environment.
+-- parent_env: the environment to inherit globals from (usually _G or kernel env)
+-- initial_vars: a flat key=value table of ENV variables (PATH, HOME, USER, etc.)
+-- Returns an environment table suitable for use with loadfile(..., env).
+function env.create_process_env(parent_env, initial_vars)
+    local process_env = setmetatable({}, { __index = parent_env })
+
+    -- ENV is the userspace dictionary equivalent of POSIX environ.
+    process_env.ENV = {}
+    for key, value in pairs(initial_vars or {}) do
+        process_env.ENV[key] = value
+    end
+
+    -- expose standard print/write into the process scope
+    process_env.print = parent_env.print
+    process_env.write = parent_env.write
+    process_env.printError = parent_env.printError
+    process_env.read = parent_env.read
+    process_env.pairs = parent_env.pairs
+    process_env.ipairs = parent_env.ipairs
+    process_env.tostring = parent_env.tostring
+    process_env.tonumber = parent_env.tonumber
+    process_env.type = parent_env.type
+    process_env.error = parent_env.error
+    process_env.assert = parent_env.assert
+    process_env.pcall = parent_env.pcall
+    process_env.xpcall = parent_env.xpcall
+    process_env.setmetatable = parent_env.setmetatable
+    process_env.getmetatable = parent_env.getmetatable
+    process_env.rawget = parent_env.rawget
+    process_env.rawset = parent_env.rawset
+    process_env.select = parent_env.select
+    process_env.unpack = parent_env.unpack or table.unpack
+    process_env.string = parent_env.string
+    process_env.table = parent_env.table
+    process_env.math = parent_env.math
+    process_env.os = setmetatable({}, { __index = parent_env.os })
+    process_env.os.run = function(_tEnv, _sPath, ...)
+        local tArgs = { ... }
+        local tEnv = _tEnv or process_env
+        if type(tEnv) == "table" and getmetatable(tEnv) == nil then
+            setmetatable(tEnv, { __index = process_env })
+        end
+        local fnFile, err = loadfile(_sPath, "t", tEnv)
+        if fnFile then
+            local ok, errRun = pcall(fnFile, table.unpack(tArgs))
+            if not ok and errRun and errRun ~= "" then
+                if process_env.printError then process_env.printError(errRun) end
+                return false
+            end
+            return true
+        end
+        if err and err ~= "" then
+            if process_env.printError then process_env.printError(err) end
+        end
+        return false
+    end
+    process_env.fs = parent_env.fs
+    process_env.term = parent_env.term
+    process_env.colors = parent_env.colors
+    process_env.keys = parent_env.keys
+    process_env.textutils = parent_env.textutils
+    process_env.peripheral = parent_env.peripheral
+    process_env.rednet = parent_env.rednet
+    process_env.http = parent_env.http
+    process_env.coroutine = parent_env.coroutine
+    process_env.io = parent_env.io
+
+    local core_path = "/lib/?.lua;/lib/?/init.lua;?;?.lua"
+    local final_path = core_path
+    if process_env.ENV and process_env.ENV.LUA_PATH then
+        final_path = core_path .. ";" .. process_env.ENV.LUA_PATH
+    elseif parent_env.package and parent_env.package.path then
+        final_path = core_path .. ";" .. parent_env.package.path
+    end
+
+    process_env.package = {
+        loaded = {},
+        path = final_path
+    }
+
+    if parent_env.package and parent_env.package.loaded then
+        for k, v in pairs(parent_env.package.loaded) do
+            process_env.package.loaded[k] = v
+        end
+    end
+
+    process_env.require = function(modname)
+        if type(modname) ~= "string" then
+            error("bad argument #1 to 'require' (string expected, got " .. type(modname) .. ")", 2)
+        end
+
+        if process_env.package.loaded[modname] ~= nil then
+            return process_env.package.loaded[modname]
+        end
+
+        local errors = {}
+        local pathStr = process_env.package.path or "?;?.lua"
+        local modpath = string.gsub(modname, "%.", "/")
+
+        for path in string.gmatch(pathStr, "[^;]+") do
+            local filename = string.gsub(path, "%?", modpath)
+
+            if process_env.fs.exists(filename) and not process_env.fs.isDir(filename) then
+                local fn, err = loadfile(filename, "t", process_env)
+                if fn then
+                    local result = fn(modname)
+                    if result == nil then
+                        result = true
+                    end
+                    process_env.package.loaded[modname] = result
+                    return result
+                else
+                    error(
+                        "error loading module '" .. modname .. "' from file '" .. filename .. "':\n  " .. tostring(err),
+                        2)
+                end
+            else
+                table.insert(errors, "no file '" .. filename .. "'")
+            end
+        end
+
+        if parent_env.require then
+            local ok, result = pcall(parent_env.require, modname)
+            if ok then
+                process_env.package.loaded[modname] = result
+                return result
+            else
+                table.insert(errors, result)
+            end
+        end
+
+        local errStr = "module '" .. modname .. "' not found:\n  " .. table.concat(errors, "\n  ")
+        error(errStr, 2)
+    end
+
+    process_env._ENV = process_env
+
+    return process_env
+end
+
+-- Expands a string containing $VAR or ${VAR} references against a given
+-- environment variable table (the flat ENV table, not the process_env).
+function env.expand_vars(str, environ)
+    if type(str) ~= "string" then return str end
+    -- Replace ${VAR} first (longer form), then $VAR
+    str = string.gsub(str, "%${([%w_]+)}", function(key)
+        return tostring(environ[key] or "")
+    end)
+    str = string.gsub(str, "%$([%w_]+)", function(key)
+        return tostring(environ[key] or "")
+    end)
+    return str
+end
+
+return env
+lib/core/events.lua
+3787
+-- /lib/core/events.lua
+-- Central event routing system for SXOS.
+-- Replaces direct os.pullEvent() calls throughout the OS internals.
+-- Processes and services register handlers for specific event types.
+-- The kernel's main loop calls events.dispatch() on each raw event.
+--
+-- Design rationale: ComputerCraft is fundamentally event-driven.
+-- Every subsystem pulling from os.pullEvent independently creates
+-- race conditions and non-deterministic wakeup order.
+-- This router gives the kernel ownership of the event queue and
+-- lets all consumers declare their interests up front.
+
+local events = {}
+
+-- Subscriptions are keyed by event name.
+-- Each entry is a list of { owner_pid, handler_fn } records.
+local subscriptions = {}
+
+-- Wildcard handlers receive every event regardless of type.
+local wildcard_handlers = {}
+
+-- Subscribe a handler function to a specific event type.
+-- owner_pid: the PID of the subscribing process (used for cleanup on exit)
+-- event_name: string event name, or "*" for all events
+-- handler: function(event_name, ...) called with event arguments
+function events.subscribe(owner_pid, event_name, handler)
+    if event_name == "*" then
+        table.insert(wildcard_handlers, { pid = owner_pid, fn = handler })
+        return
+    end
+    if not subscriptions[event_name] then
+        subscriptions[event_name] = {}
+    end
+    table.insert(subscriptions[event_name], { pid = owner_pid, fn = handler })
+end
+
+-- Remove all subscriptions belonging to a given PID.
+-- Called automatically when a process exits.
+function events.unsubscribe_all(owner_pid)
+    for event_name, handlers in pairs(subscriptions) do
+        local remaining = {}
+        for _, entry in ipairs(handlers) do
+            if entry.pid ~= owner_pid then
+                table.insert(remaining, entry)
+            end
+        end
+        subscriptions[event_name] = remaining
+    end
+    local remaining_wildcards = {}
+    for _, entry in ipairs(wildcard_handlers) do
+        if entry.pid ~= owner_pid then
+            table.insert(remaining_wildcards, entry)
+        end
+    end
+    wildcard_handlers = remaining_wildcards
+end
+
+-- Deliver a pre-pulled event to all relevant subscribers.
+-- event_packet: table.pack(os.pullEventRaw()) result
+-- Returns the number of handlers that were invoked.
+function events.dispatch(event_packet)
+    local event_name = event_packet[1]
+    local invoked = 0
+
+    -- Deliver to specific subscribers first.
+    local specific = subscriptions[event_name]
+    if specific then
+        for _, entry in ipairs(specific) do
+            local ok, err = pcall(entry.fn, table.unpack(event_packet, 1, event_packet.n))
+            if not ok then
+                -- Handler errors are isolated; they never crash the dispatcher.
+                printError("[events] handler error for '" .. event_name .. "': " .. tostring(err))
+            end
+            invoked = invoked + 1
+        end
+    end
+
+    -- Deliver to wildcard subscribers.
+    for _, entry in ipairs(wildcard_handlers) do
+        local ok, err = pcall(entry.fn, table.unpack(event_packet, 1, event_packet.n))
+        if not ok then
+            printError("[events] wildcard handler error: " .. tostring(err))
+        end
+        invoked = invoked + 1
+    end
+
+    return invoked
+end
+
+-- Emit a synthetic event into the routing system without going through
+-- os.queueEvent. Useful for intra-kernel communication.
+function events.emit(event_name, ...)
+    local packet = table.pack(event_name, ...)
+    events.dispatch(packet)
+end
+
+-- Expose current subscriber counts for diagnostics.
+function events.stats()
+    local counts = {}
+    for name, handlers in pairs(subscriptions) do
+        counts[name] = #handlers
+    end
+    counts["*"] = #wildcard_handlers
+    return counts
+end
+
+return events
+lib/core/process.lua
+4956
+-- /lib/core/process.lua
+-- Process lifecycle management for SXOS.
+-- A process is a coroutine with a formal identity: pid, environment,
+-- working directory, stdio handles, event subscriptions, and a parent.
+-- The kernel scheduler resumes and manages all live processes each tick.
+--
+-- Pipes are implemented by substituting stdout of one process with a
+-- write-only file handle that stdin of the next process reads from.
+
+local process       = {}
+
+local events_module = dofile("/lib/core/events.lua")
+local log_module    = dofile("/lib/core/log.lua")
+
+-- Master process table: pid -> process_record
+local process_table = {}
+local next_pid      = 1
+
+-- Formal process record structure:
+-- {
+--   pid          = number,
+--   name         = string,
+--   env          = table,         -- isolated Lua environment
+--   cwd          = string,        -- current working directory
+--   stdin        = file_handle,   -- readable handle (or nil for terminal)
+--   stdout       = file_handle,   -- writable handle (or nil for terminal)
+--   stderr       = file_handle,   -- writable handle (or nil for terminal)
+--   parent_pid   = number | nil,
+--   coroutine    = coroutine,
+--   filter       = string | nil,  -- coroutine yield filter (like CraftOS yield filter)
+--   status       = "running" | "suspended" | "dead",
+--   exit_code    = number | nil,
+-- }
+
+local function new_pid()
+    local pid = next_pid
+    next_pid = next_pid + 1
+    return pid
+end
+
+-- Spawn a new process from a loaded function.
+-- Options table:
+--   name       : display name (default "unnamed")
+--   env        : environment table
+--   cwd        : starting directory (default "/")
+--   parent_pid : pid of spawner (optional)
+--   stdin      : readable file handle (optional)
+--   stdout     : writable file handle (optional)
+--   stderr     : writable file handle (optional)
+function process.spawn(fn, options)
+    options = options or {}
+    local pid = new_pid()
+    local record = {
+        pid        = pid,
+        name       = options.name or "unnamed",
+        env        = options.env or _ENV,
+        cwd        = options.cwd or "/",
+        stdin      = options.stdin or nil,
+        stdout     = options.stdout or nil,
+        stderr     = options.stderr or nil,
+        parent_pid = options.parent_pid or nil,
+        coroutine  = coroutine.create(fn),
+        filter     = nil,
+        status     = "running",
+        exit_code  = nil,
+    }
+    process_table[pid] = record
+    log_module.info("proc", "spawned pid=" .. pid .. " name=" .. record.name)
+    return pid
+end
+
+-- Retrieve a process record by PID.
+function process.get(pid)
+    return process_table[pid]
+end
+
+-- List all live process records.
+function process.list()
+    local result = {}
+    for pid, record in pairs(process_table) do
+        if record.status ~= "dead" then
+            table.insert(result, record)
+        end
+    end
+    return result
+end
+
+-- Deliver an event packet to a single process coroutine.
+-- Returns true if the coroutine is still alive after the resume.
+local function resume_process(record, event_packet)
+    if record.status == "dead" then return false end
+
+    -- Only resume if the coroutine is waiting for this event type or any.
+    local event_name = event_packet[1]
+    if record.filter and record.filter ~= event_name and event_name ~= "terminate" then
+        return true -- not interested in this event, leave suspended
+    end
+
+    local ok, yield_or_err = coroutine.resume(record.coroutine, table.unpack(event_packet, 1, event_packet.n))
+
+    if coroutine.status(record.coroutine) == "dead" then
+        record.status = "dead"
+        record.exit_code = ok and 0 or 1
+        events_module.unsubscribe_all(record.pid)
+        log_module.info("proc", "exited pid=" .. record.pid .. " code=" .. record.exit_code)
+        if not ok then
+            log_module.error("proc", "pid=" .. record.pid .. " crashed: " .. tostring(yield_or_err))
+        end
+        return false
+    else
+        -- yield_or_err is the event filter string the coroutine is waiting for.
+        record.filter = yield_or_err
+        record.status = "suspended"
+        return true
+    end
+end
+
+-- Tick all live processes with the given event packet.
+-- Called by the kernel event loop on each iteration.
+function process.tick(event_packet)
+    for pid, record in pairs(process_table) do
+        if record.status ~= "dead" then
+            resume_process(record, event_packet)
+        end
+    end
+
+    -- Reap dead processes from the table.
+    for pid, record in pairs(process_table) do
+        if record.status == "dead" then
+            process_table[pid] = nil
+        end
+    end
+end
+
+-- Forcibly terminate a process by PID.
+-- Sends a "terminate" event to the coroutine.
+function process.kill(pid)
+    local record = process_table[pid]
+    if not record or record.status == "dead" then return false end
+    resume_process(record, table.pack("terminate"))
+    return true
+end
+
+return process
+lib/core/service.lua
+2582
+-- /lib/core/service.lua
+-- Daemon and service registry for SXOS.
+-- Services are long-running background processes that expose named RPC endpoints.
+-- They register themselves with the kernel at Stage 4 boot and remain active
+-- for the lifetime of the OS session.
+--
+-- Design: services are just named processes with an additional endpoint table.
+-- Any process can call a service endpoint by name via service.call().
+-- This provides a lightweight IPC mechanism without external sockets.
+
+local service = {}
+
+local log_module = dofile("/lib/core/log.lua")
+
+-- Registry: service_name -> { pid, endpoints }
+local registry = {}
+
+-- Register a named service.
+-- service_name : unique string identifier (e.g. "discoverd", "sshd")
+-- pid          : the PID of the service process (from process.spawn)
+-- endpoints    : table of name -> function, callable by other processes
+function service.register(service_name, pid, endpoints)
+    if registry[service_name] then
+        log_module.warn("service", "re-registering existing service: " .. service_name)
+    end
+    registry[service_name] = {
+        pid       = pid,
+        endpoints = endpoints or {},
+        name      = service_name,
+    }
+    log_module.info("service", "registered: " .. service_name .. " (pid=" .. pid .. ")")
+end
+
+-- Unregister a service. Called when its process exits.
+function service.unregister(service_name)
+    if registry[service_name] then
+        registry[service_name] = nil
+        log_module.info("service", "unregistered: " .. service_name)
+    end
+end
+
+-- Call a named endpoint on a registered service.
+-- Returns success_boolean, result_or_error_message
+function service.call(service_name, endpoint_name, ...)
+    local entry = registry[service_name]
+    if not entry then
+        return false, "no such service: " .. tostring(service_name)
+    end
+    local endpoint_fn = entry.endpoints[endpoint_name]
+    if not endpoint_fn then
+        return false, "no such endpoint: " .. tostring(endpoint_name) .. " on " .. service_name
+    end
+    return pcall(endpoint_fn, ...)
+end
+
+-- Check whether a service is currently registered.
+function service.is_running(service_name)
+    return registry[service_name] ~= nil
+end
+
+-- List all registered services.
+function service.list()
+    local result = {}
+    for name, entry in pairs(registry) do
+        table.insert(result, { name = name, pid = entry.pid })
+    end
+    return result
+end
+
+-- Retrieve a service's PID.
+function service.pid_of(service_name)
+    local entry = registry[service_name]
+    return entry and entry.pid or nil
+end
+
+return service
+lib/core/sx.lua
+2666
+-- /lib/core/sx.lua
+-- The public sx.* API surface for SXOS.
+-- This is the only interface that binaries and userspace scripts should touch.
+-- Internal modules (process, service, events, vfs) are NOT imported directly
+-- by userspace. All access goes through this stable layer.
+--
+-- Design rationale: direct internal access creates brittle coupling that makes
+-- refactoring catastrophic. This facade keeps the internal module structure free
+-- to evolve while binaries stay stable.
+
+local sx = {}
+
+-- Lazy-load helpers so we only pay the dofile cost for subsystems actually used.
+local loaded_modules = {}
+
+local function require_internal(path)
+    if not loaded_modules[path] then
+        loaded_modules[path] = dofile(path)
+    end
+    return loaded_modules[path]
+end
+
+-- sx.fs: filesystem and VFS operations
+sx.fs = setmetatable({}, {
+    __index = function(_, key)
+        return require_internal("/lib/fs/vfs.lua")[key]
+    end
+})
+
+-- sx.path: path manipulation utilities
+sx.path = setmetatable({}, {
+    __index = function(_, key)
+        return require_internal("/lib/fs/path.lua")[key]
+    end
+})
+
+-- sx.proc: process management
+sx.proc = setmetatable({}, {
+    __index = function(_, key)
+        return require_internal("/lib/core/process.lua")[key]
+    end
+})
+
+-- sx.events: event subscription and emission
+sx.events = setmetatable({}, {
+    __index = function(_, key)
+        return require_internal("/lib/core/events.lua")[key]
+    end
+})
+
+-- sx.service: service registry and IPC
+sx.service = setmetatable({}, {
+    __index = function(_, key)
+        return require_internal("/lib/core/service.lua")[key]
+    end
+})
+
+-- sx.net: networking primitives
+sx.net = setmetatable({}, {
+    __index = function(_, key)
+        return require_internal("/lib/net/rednet.lua")[key]
+    end
+})
+
+-- sx.device: centralized device registry APIs
+sx.device = setmetatable({}, {
+    __index = function(_, key)
+        return require_internal("/lib/core/device.lua")[key]
+    end
+})
+
+-- sx.pkg: package management operations
+sx.pkg = setmetatable({}, {
+    __index = function(_, key)
+        return require_internal("/lib/pkg/database.lua")[key]
+    end
+})
+
+-- sx.log: logging shortcuts bound to the calling binary's name
+function sx.make_logger(source)
+    local log_module = require_internal("/lib/core/log.lua")
+    return {
+        debug = function(msg) log_module.debug(source, msg) end,
+        info  = function(msg) log_module.info(source, msg) end,
+        warn  = function(msg) log_module.warn(source, msg) end,
+        error = function(msg) log_module.error(source, msg) end,
+        fatal = function(msg) log_module.fatal(source, msg) end,
+    }
+end
+
+return sx
+lib/core/device.lua
+4261
+-- /lib/core/device.lua
+local events        = dofile("/lib/core/events.lua")
+local log           = dofile("/lib/core/log.lua")
+
+local device        = {}
+
+-- Store device entries here: { id = ..., type = ..., side = ..., mounted = ..., mountpoint = ..., etc }
+local registry      = {}
+local side_to_id    = {}
+local type_counters = {}
+
+local function generate_id(ptype)
+    type_counters[ptype] = (type_counters[ptype] or -1) + 1
+    return ptype .. "_" .. type_counters[ptype]
+end
+
+local function load_driver(ptype)
+    local path = "/lib/devices/" .. ptype .. ".lua"
+    if fs.exists(path) then
+        return dofile(path)
+    end
+    return dofile("/lib/devices/generic.lua")
+end
+
+function device.register(side, ptype, is_remote)
+    if side_to_id[side] then return end -- already registered
+
+    local id = generate_id(ptype)
+    local dev = {
+        id = id,
+        type = ptype,
+        side = side,
+        mounted = false,
+        mountpoint = nil,
+        remote = is_remote or false,
+        owner_process = nil,
+        exclusive = false,
+        driver_module = load_driver(ptype)
+    }
+
+    if not is_remote then
+        dev.native = peripheral.wrap(side)
+    end
+
+    if dev.driver_module and dev.driver_module.get_capabilities then
+        dev.capabilities = dev.driver_module.get_capabilities(dev.native)
+    else
+        dev.capabilities = {}
+    end
+
+    registry[id] = dev
+    side_to_id[side] = id
+    log.info("device", "Attached " .. (is_remote and "remote " or "") .. "peripheral " .. id .. " on " .. side)
+    return id
+end
+
+function device.unregister(side)
+    local id = side_to_id[side]
+    if not id then return end
+
+    local dev = registry[id]
+    if dev.mounted and dev.mountpoint then
+        device.unmount(dev.mountpoint)
+    end
+
+    registry[id] = nil
+    side_to_id[side] = nil
+    log.info("device", "Detached peripheral " .. id .. " on " .. side)
+end
+
+function device.get_all()
+    local list = {}
+    for _, dev in pairs(registry) do
+        table.insert(list, dev)
+    end
+    return list
+end
+
+function device.get(id)
+    return registry[id]
+end
+
+function device.mount(id, path)
+    local dev = registry[id]
+    if not dev then return false, "Device not found" end
+    if dev.mounted then return false, "Already mounted at " .. dev.mountpoint end
+
+    dev.mounted = true
+    dev.mountpoint = path
+    log.info("device", "Mounted " .. id .. " to " .. path)
+    return true
+end
+
+function device.unmount(path)
+    for _, dev in pairs(registry) do
+        if dev.mountpoint == path then
+            dev.mounted = false
+            dev.mountpoint = nil
+            log.info("device", "Unmounted " .. dev.id .. " from " .. path)
+            return true
+        end
+    end
+    return false, "No device mounted at " .. path
+end
+
+function device.open(id)
+    local dev = registry[id]
+    if not dev then return nil, "Device not found" end
+
+    if dev.driver_module and dev.driver_module.open then
+        return dev.driver_module.open(dev)
+    end
+    return nil, "Driver does not support open()"
+end
+
+function device.reserve(id, process_id)
+    local dev = registry[id]
+    if not dev then return false, "Device not found" end
+    if dev.owner_process then return false, "Already reserved by process " .. dev.owner_process end
+
+    dev.owner_process = process_id
+    dev.exclusive = true
+    return true
+end
+
+function device.release(id, process_id)
+    local dev = registry[id]
+    if not dev then return false, "Device not found" end
+
+    if dev.owner_process ~= process_id then
+        return false, "Not owned by this process"
+    end
+
+    dev.owner_process = nil
+    dev.exclusive = false
+    return true
+end
+
+function device.init()
+    -- Initialize with currently attached peripherals
+    for _, side in ipairs(peripheral.getNames()) do
+        local ptype = peripheral.getType(side)
+        if ptype then
+            device.register(side, ptype, false)
+        end
+    end
+
+    -- Subscribe to events
+    events.subscribe(0, "peripheral", function(_, side)
+        local ptype = peripheral.getType(side)
+        if ptype then
+            device.register(side, ptype, false)
+        end
+    end)
+
+    events.subscribe(0, "peripheral_detach", function(_, side)
+        device.unregister(side)
+    end)
+end
+
+return device
+lib/compat/peripheral.lua
+2003
+-- /lib/compat/peripheral.lua
+local device = dofile("/lib/core/device.lua")
+local compat = {}
+
+function compat.isPresent(name)
+    local all = device.get_all()
+    for _, dev in ipairs(all) do
+        if dev.side == name then return true end
+    end
+    return false
+end
+
+function compat.getType(name)
+    local all = device.get_all()
+    for _, dev in ipairs(all) do
+        if dev.side == name then return dev.type end
+    end
+    return nil
+end
+
+function compat.getMethods(name)
+    if not compat.isPresent(name) then return nil end
+    local wrapped = compat.wrap(name)
+    if not wrapped then return nil end
+    local methods = {}
+    for k, v in pairs(wrapped) do
+        if type(v) == "function" then
+            table.insert(methods, k)
+        end
+    end
+    return methods
+end
+
+function compat.call(name, method, ...)
+    local wrapped = compat.wrap(name)
+    if not wrapped then return nil, "No such peripheral" end
+    if not wrapped[method] then return nil, "No such method" end
+    return wrapped[method](...)
+end
+
+function compat.wrap(name)
+    local all = device.get_all()
+    local target_id = nil
+    for _, dev in ipairs(all) do
+        if dev.side == name then
+            target_id = dev.id
+            break
+        end
+    end
+    if not target_id then return nil end
+    return device.open(target_id)
+end
+
+function compat.find(ptype, fn)
+    local results = {}
+    local all = device.get_all()
+    for _, dev in ipairs(all) do
+        if dev.type == ptype then
+            local wrapped = device.open(dev.id)
+            if wrapped then
+                if fn == nil or fn(dev.side, wrapped) then
+                    table.insert(results, wrapped)
+                end
+            end
+        end
+    end
+    return table.unpack(results)
+end
+
+function compat.getNames()
+    local names = {}
+    local all = device.get_all()
+    for _, dev in ipairs(all) do
+        if dev.side then
+            table.insert(names, dev.side)
+        end
+    end
+    return names
+end
+
+return compat
+lib/fs/vfs.lua
+8010
+-- /lib/fs/vfs.lua
+-- Virtual Filesystem layer for SXOS.
+-- Provides a mount-point system that intercepts file operations at specific
+-- path prefixes and dispatches them to registered backend drivers.
+--
+-- Mounts can represent:
+--   devfs  - peripheral device nodes under /dev
+--   netfs  - RPC-backed remote nodes under /net
+--   ramfs  - in-memory scratch filesystems
+--   real   - pass-through to CraftOS fs (the default for all other paths)
+--
+-- All binaries should call sx.fs.* (which delegates here) rather than
+-- calling the CraftOS fs API directly, so that mounts are transparent.
+
+local vfs         = {}
+
+local path_module = dofile("/lib/fs/path.lua")
+local log_module  = dofile("/lib/core/log.lua")
+
+-- Mount table: ordered list of { prefix, driver }
+-- Checked in registration order; first prefix match wins.
+-- The real CraftOS fs is always the fallback.
+local mounts      = {}
+
+-- A driver is a table of functions mirroring the CraftOS fs API:
+--   driver.open(path, mode)  -> file_handle | nil, err
+--   driver.exists(path)      -> bool
+--   driver.isDir(path)       -> bool
+--   driver.list(path)        -> table | nil
+--   driver.makeDir(path)
+--   driver.delete(path)
+--   driver.move(from, to)
+--   driver.copy(from, to)
+--   driver.getSize(path)     -> number
+-- Drivers do not need to implement every method.
+-- Missing methods fall through to the real fs.
+
+function vfs.mount(prefix, driver)
+    prefix = path_module.normalize(prefix)
+    -- Check for duplicate before inserting.
+    for _, entry in ipairs(mounts) do
+        if entry.prefix == prefix then
+            log_module.warn("vfs", "replacing existing mount at " .. prefix)
+            entry.driver = driver
+            return
+        end
+    end
+    table.insert(mounts, { prefix = prefix, driver = driver })
+    log_module.info("vfs", "mounted driver at " .. prefix)
+end
+
+function vfs.unmount(prefix)
+    prefix = path_module.normalize(prefix)
+    for index, entry in ipairs(mounts) do
+        if entry.prefix == prefix then
+            table.remove(mounts, index)
+            log_module.info("vfs", "unmounted " .. prefix)
+            return true
+        end
+    end
+    return false
+end
+
+-- Resolve which driver handles a given path.
+-- Returns the driver (or nil for real fs) and the path as seen by the driver.
+local function resolve_driver(target_path)
+    local normalized = path_module.normalize(target_path)
+    for _, entry in ipairs(mounts) do
+        local prefix = entry.prefix
+        if normalized == prefix
+            or string.sub(normalized, 1, #prefix + 1) == prefix .. "/"
+        then
+            return entry.driver, normalized
+        end
+    end
+    return nil, normalized
+end
+
+-- File open: returns a CraftOS-compatible file handle.
+function vfs.open(target_path, mode)
+    local driver, resolved = resolve_driver(target_path)
+    if driver and driver.open then
+        return driver.open(resolved, mode)
+    end
+    return fs.open(resolved, mode)
+end
+
+function vfs.exists(target_path)
+    local driver, resolved = resolve_driver(target_path)
+    if driver and driver.exists then return driver.exists(resolved) end
+    return fs.exists(resolved)
+end
+
+function vfs.isDir(target_path)
+    local driver, resolved = resolve_driver(target_path)
+    if driver and driver.isDir then return driver.isDir(resolved) end
+    return fs.isDir(resolved)
+end
+
+function vfs.list(target_path)
+    local driver, resolved = resolve_driver(target_path)
+    if driver and driver.list then return driver.list(resolved) end
+    if fs.exists(resolved) and fs.isDir(resolved) then return fs.list(resolved) end
+    return nil
+end
+
+function vfs.makeDir(target_path)
+    local driver, resolved = resolve_driver(target_path)
+    if driver and driver.makeDir then return driver.makeDir(resolved) end
+    fs.makeDir(resolved)
+end
+
+function vfs.delete(target_path)
+    local driver, resolved = resolve_driver(target_path)
+    if driver and driver.delete then return driver.delete(resolved) end
+    fs.delete(resolved)
+end
+
+function vfs.move(source_path, dest_path)
+    local driver, resolved_src = resolve_driver(source_path)
+    if driver and driver.move then return driver.move(resolved_src, dest_path) end
+    fs.move(resolved_src, dest_path)
+end
+
+function vfs.copy(source_path, dest_path)
+    local driver, resolved_src = resolve_driver(source_path)
+    if driver and driver.copy then return driver.copy(resolved_src, dest_path) end
+    fs.copy(resolved_src, dest_path)
+end
+
+function vfs.getSize(target_path)
+    local driver, resolved = resolve_driver(target_path)
+    if driver and driver.getSize then return driver.getSize(resolved) end
+    return fs.getSize(resolved)
+end
+
+-- -----------------------------------------------------------------------
+-- devfs: peripheral device nodes under /dev
+-- Routes Virtual File System commands to dynamically mounted devices
+-- tracked in the SXOS Device Registry instead of raw peripheral wrap.
+-- -----------------------------------------------------------------------
+local devfs = {}
+local current_device_registry = nil
+
+function devfs.exists(dev_path)
+    if dev_path == "/dev" then return true end
+    if not current_device_registry then return false end
+    for _, dev in pairs(current_device_registry.get_all()) do
+        if dev.mounted and dev.mountpoint == dev_path then return true end
+    end
+    return false
+end
+
+function devfs.isDir(dev_path)
+    return dev_path == "/dev"
+end
+
+function devfs.list(dev_path)
+    if dev_path ~= "/dev" then return nil end
+    local items = {}
+    if current_device_registry then
+        for _, dev in pairs(current_device_registry.get_all()) do
+            if dev.mounted and dev.mountpoint then
+                local basename = string.match(dev.mountpoint, "^.*/([^/]+)$") or dev.mountpoint
+                table.insert(items, basename)
+            end
+        end
+    end
+    return items
+end
+
+function devfs.open(dev_path, _mode)
+    if dev_path == "/dev" then return nil, "cannot open /dev as a file" end
+    if not current_device_registry then return nil, "device registry not initialized" end
+
+    for _, dev in pairs(current_device_registry.get_all()) do
+        if dev.mounted and dev.mountpoint == dev_path then
+            local instance = current_device_registry.open(dev.id)
+            if not instance then return nil, "driver failed to open device" end
+            -- VFS handles expect typical close()
+            instance.close = instance.close or function() end
+            return instance
+        end
+    end
+    return nil, "no device mounted at " .. dev_path
+end
+
+-- -----------------------------------------------------------------------
+-- netfs: network-transparent nodes under /net
+-- /net/<hostname>/<path>  resolves via service discovery + RPC transport.
+-- The actual data flow goes through the networking library.
+-- -----------------------------------------------------------------------
+local netfs = {}
+
+function netfs.exists(net_path)
+    -- Lazily delegate to the net discovery layer.
+    local ok, result = pcall(function()
+        local net_module = dofile("/lib/net/rednet.lua")
+        return net_module.stat(net_path) ~= nil
+    end)
+    return ok and result
+end
+
+function netfs.isDir(net_path)
+    return net_path == "/net"
+end
+
+function netfs.list(net_path)
+    if net_path == "/net" then
+        local ok, result = pcall(function()
+            local net_module = dofile("/lib/net/rednet.lua")
+            return net_module.discover_hosts()
+        end)
+        return ok and result or {}
+    end
+    return {}
+end
+
+function netfs.open(net_path, mode)
+    local net_module = dofile("/lib/net/rednet.lua")
+    return net_module.open_remote(net_path, mode)
+end
+
+-- Mount devfs and netfs at their canonical prefixes.
+-- This is called by the kernel at Stage 3 (Mounting).
+function vfs.mount_builtin_drivers(device_registry)
+    current_device_registry = device_registry
+    vfs.mount("/dev", devfs)
+    vfs.mount("/net", netfs)
+    log_module.info("vfs", "built-in drivers mounted")
+end
+
+return vfs
+lib/fs/path.lua
+2981
+-- /lib/fs/path.lua
+-- Standard path manipulation utilities for SXOS.
+-- Provides POSIX-style path operations on top of CraftOS's fs module.
+
+local path = {}
+
+-- Normalize a path by resolving . and .. components, collapsing multiple
+-- slashes, and ensuring it is absolute.
+function path.normalize(raw_path)
+    -- Treat empty path as root.
+    if not raw_path or raw_path == "" then return "/" end
+
+    local parts = {}
+    -- Preserve leading slash to detect absolute paths.
+    local is_absolute = string.sub(raw_path, 1, 1) == "/"
+
+    for segment in string.gmatch(raw_path, "[^/]+") do
+        if segment == ".." then
+            if #parts > 0 then
+                table.remove(parts)
+            end
+        elseif segment ~= "." then
+            table.insert(parts, segment)
+        end
+    end
+
+    local result = table.concat(parts, "/")
+    if is_absolute then
+        return "/" .. result
+    end
+    return result == "" and "." or result
+end
+
+-- Join path segments together and normalize the result.
+function path.join(...)
+    local segments = { ... }
+    return path.normalize(table.concat(segments, "/"))
+end
+
+-- Return the parent directory of a path.
+function path.dirname(raw_path)
+    local normalized = path.normalize(raw_path)
+    local last_slash = 0
+    for i = #normalized, 1, -1 do
+        if string.sub(normalized, i, i) == "/" then
+            last_slash = i
+            break
+        end
+    end
+    if last_slash <= 1 then return "/" end
+    return string.sub(normalized, 1, last_slash - 1)
+end
+
+-- Return the filename component of a path (everything after the last slash).
+function path.basename(raw_path)
+    local normalized = path.normalize(raw_path)
+    for i = #normalized, 1, -1 do
+        if string.sub(normalized, i, i) == "/" then
+            return string.sub(normalized, i + 1)
+        end
+    end
+    return normalized
+end
+
+-- Return the file extension (without the dot), or an empty string if none.
+function path.extension(raw_path)
+    local base = path.basename(raw_path)
+    local dot = string.find(base, "%.[^%.]+$")
+    if dot then
+        return string.sub(base, dot + 1)
+    end
+    return ""
+end
+
+-- Return the filename without its extension.
+function path.stem(raw_path)
+    local base = path.basename(raw_path)
+    local dot = string.find(base, "%.[^%.]+$")
+    if dot then
+        return string.sub(base, 1, dot - 1)
+    end
+    return base
+end
+
+-- Split a path into directory and filename parts.
+function path.split(raw_path)
+    return path.dirname(raw_path), path.basename(raw_path)
+end
+
+-- Resolve a potentially relative path against a base directory.
+function path.resolve(base_dir, target)
+    if string.sub(target, 1, 1) == "/" then
+        return path.normalize(target)
+    end
+    return path.normalize(base_dir .. "/" .. target)
+end
+
+-- Check whether a string looks like an absolute path.
+function path.is_absolute(raw_path)
+    return type(raw_path) == "string" and string.sub(raw_path, 1, 1) == "/"
+end
+
+return path
+lib/fs/permissions.lua
+3547
+-- /lib/fs/permissions.lua
+-- API-layer permission enforcement for SXOS.
+-- IMPORTANT: These permissions only apply within SXOS. Raw CraftOS fs calls
+-- bypass this layer entirely. Security is sandbox-level, not kernel-level.
+-- The system is designed to prevent accidental cross-user access, not
+-- to prevent malicious code running inside CraftOS.
+
+local permissions = {}
+
+local log_module = dofile("/lib/core/log.lua")
+
+-- Permission bits mirror simplified POSIX: owner_read, owner_write, exec
+-- Stored as a flat metadata file alongside directories and key files.
+-- Format in the metadata index: { path -> { owner, mode } }
+
+local METADATA_PATH = "/var/lib/sxos/permissions.db"
+
+local metadata_cache = nil
+
+local function load_metadata()
+    if metadata_cache then return metadata_cache end
+    if fs.exists(METADATA_PATH) then
+        local handle = fs.open(METADATA_PATH, "r")
+        if handle then
+            local raw = handle.readAll()
+            handle.close()
+            local parsed = textutils.unserialize(raw)
+            metadata_cache = type(parsed) == "table" and parsed or {}
+            return metadata_cache
+        end
+    end
+    metadata_cache = {}
+    return metadata_cache
+end
+
+local function save_metadata()
+    local dir = "/var/lib/sxos"
+    if not fs.exists(dir) then fs.makeDir(dir) end
+    local handle = fs.open(METADATA_PATH, "w")
+    if handle then
+        handle.write(textutils.serialize(metadata_cache))
+        handle.close()
+    end
+end
+
+-- Record ownership and mode for a path.
+-- mode: "rw" (default), "r" (read-only), "x" (executable)
+function permissions.chown(target_path, owner_username, mode)
+    local meta = load_metadata()
+    meta[target_path] = { owner = owner_username, mode = mode or "rw" }
+    save_metadata()
+    log_module.info("permissions", "chown " .. target_path .. " -> " .. owner_username)
+end
+
+-- Retrieve ownership record for a path, or nil if unset.
+function permissions.stat(target_path)
+    return load_metadata()[target_path]
+end
+
+-- Check whether a given user may read a path.
+-- Returns true if the path has no ownership record (unprotected) or the user matches.
+function permissions.can_read(target_path, username)
+    local meta = load_metadata()
+    local record = meta[target_path]
+    if not record then return true end
+    return record.owner == username or username == "root"
+end
+
+-- Check whether a given user may write a path.
+function permissions.can_write(target_path, username)
+    local meta = load_metadata()
+    local record = meta[target_path]
+    if not record then return true end
+    if record.owner == username or username == "root" then
+        return record.mode == "rw" or record.mode == "x"
+    end
+    return false
+end
+
+-- Check whether a path is marked executable.
+function permissions.is_executable(target_path)
+    local meta = load_metadata()
+    local record = meta[target_path]
+    if not record then return false end
+    return record.mode == "x"
+end
+
+-- Mark a file executable (chmod +x equivalent).
+function permissions.mark_executable(target_path, requesting_user)
+    local meta = load_metadata()
+    local record = meta[target_path]
+    if record and record.owner ~= requesting_user and requesting_user ~= "root" then
+        log_module.warn("permissions", requesting_user .. " denied chmod on " .. target_path)
+        return false
+    end
+    if not record then
+        meta[target_path] = { owner = requesting_user, mode = "x" }
+    else
+        record.mode = "x"
+    end
+    save_metadata()
+    return true
+end
+
+return permissions
+lib/net/discovery.lua
+2195
+-- /lib/net/discovery.lua
+-- Service discovery daemon support for SXOS.
+-- This module handles the responder side of the SXOS_DISCOVER protocol.
+-- Load this inside the discoverd service to make this host discoverable.
+
+local discovery           = {}
+
+local log_module          = dofile("/lib/core/log.lua")
+local service_module      = dofile("/lib/core/service.lua")
+
+local PROTOCOL_DISCOVER   = "SXOS_DISCOVER"
+local PROTOCOL_ANNOUNCE   = "SXOS_ANNOUNCE"
+
+-- The hostname this node advertises.
+local registered_hostname = os.getComputerLabel() or ("node-" .. os.getComputerID())
+
+-- Override the advertised hostname.
+function discovery.set_hostname(name)
+    registered_hostname = name
+end
+
+-- Wire up device registry dependencies
+local device_registry = nil
+function discovery.init(dr)
+    device_registry = dr
+end
+
+-- Build the announcement payload sent in response to discovery broadcasts.
+local function build_announcement()
+    local service_list = {}
+    for _, entry in ipairs(service_module.list()) do
+        table.insert(service_list, entry.name)
+    end
+
+    local dev_list = {}
+    if device_registry then
+        for _, dev in pairs(device_registry.get_all()) do
+            table.insert(dev_list, dev.id)
+        end
+    end
+
+    return {
+        hostname = registered_hostname,
+        id       = os.getComputerID(),
+        services = service_list,
+        devices  = dev_list
+    }
+end
+
+-- Start the discovery responder loop.
+-- This is a blocking loop and should run inside a process coroutine.
+function discovery.run_responder()
+    -- Ensure a modem is open.
+    local modem_names = { peripheral.find("modem") }
+    for _, modem in ipairs(modem_names) do
+        local side = peripheral.getName(modem)
+        if side then
+            rednet.open(side)
+            break
+        end
+    end
+
+    log_module.info("discoverd", "responder started as '" .. registered_hostname .. "'")
+
+    while true do
+        local sender_id, message = rednet.receive(PROTOCOL_DISCOVER)
+        if sender_id and type(message) == "table" and message.type == "discover" then
+            rednet.send(sender_id, build_announcement(), PROTOCOL_ANNOUNCE)
+        end
+    end
+end
+
+return discovery
+lib/net/rednet.lua
+6147
+-- /lib/net/rednet.lua
+-- SXOS networking library built on ComputerCraft's rednet API.
+-- Provides service discovery, RPC transport, and the /net VFS backend.
+--
+-- Protocol overview:
+--   All SXOS protocol messages are tables serialized with textutils.
+--   Every message carries: { protocol, type, payload, sender_id }
+--
+--   Discovery: broadcast SXOS_DISCOVER, collect SXOS_ANNOUNCE replies.
+--   RPC:       send SXOS_RPC_REQUEST, await SXOS_RPC_RESPONSE.
+--   File:      send SXOS_FILE_REQUEST, receive streamed SXOS_FILE_DATA.
+
+local net               = {}
+
+local log_module        = dofile("/lib/core/log.lua")
+
+local PROTOCOL_DISCOVER = "SXOS_DISCOVER"
+local PROTOCOL_ANNOUNCE = "SXOS_ANNOUNCE"
+local PROTOCOL_RPC      = "SXOS_RPC"
+local PROTOCOL_FILE     = "SXOS_FILE"
+local DEFAULT_TIMEOUT   = 3
+
+-- Ensure a modem is open. Opens the first available modem if none is open.
+local function ensure_modem()
+    if rednet.isOpen() then return true end
+    local modem_names = { peripheral.find("modem") }
+    for _, modem in ipairs(modem_names) do
+        local side = peripheral.getName(modem)
+        if side then
+            rednet.open(side)
+            log_module.info("net", "opened modem on " .. side)
+            return true
+        end
+    end
+    log_module.warn("net", "no modem available")
+    return false
+end
+
+-- Broadcast a discovery request and collect responding SXOS hosts.
+-- Returns a list of { id, hostname, services } records.
+function net.discover_hosts(timeout)
+    timeout = timeout or DEFAULT_TIMEOUT
+    if not ensure_modem() then return {} end
+
+    rednet.broadcast({ type = "discover", version = 1 }, PROTOCOL_DISCOVER)
+
+    local hosts = {}
+    local deadline = os.clock() + timeout
+    while os.clock() < deadline do
+        local remaining = deadline - os.clock()
+        local sender_id, message = rednet.receive(PROTOCOL_ANNOUNCE, remaining)
+        if sender_id and type(message) == "table" then
+            table.insert(hosts, {
+                id       = sender_id,
+                hostname = message.hostname or tostring(sender_id),
+                services = message.services or {},
+            })
+        end
+    end
+    return hosts
+end
+
+-- Ping a specific computer by ID.
+-- Returns round-trip time in seconds, or nil on timeout.
+function net.ping(target_id, timeout)
+    timeout = timeout or DEFAULT_TIMEOUT
+    if not ensure_modem() then return nil end
+    local start = os.clock()
+    rednet.send(target_id, { type = "ping", timestamp = start }, PROTOCOL_RPC)
+    local sender_id, message = rednet.receive(PROTOCOL_RPC, timeout)
+    if sender_id == target_id and type(message) == "table" and message.type == "pong" then
+        return os.clock() - start
+    end
+    return nil
+end
+
+-- Call a named RPC endpoint on a remote host.
+-- Returns success_boolean, result_or_error
+function net.rpc_call(target_id, service_name, endpoint_name, args, timeout)
+    timeout = timeout or DEFAULT_TIMEOUT
+    if not ensure_modem() then return false, "no modem" end
+
+    local request_id = tostring(os.clock()) .. "-" .. tostring(math.random(10000))
+    rednet.send(target_id, {
+        type       = "rpc_request",
+        request_id = request_id,
+        service    = service_name,
+        endpoint   = endpoint_name,
+        args       = args or {},
+    }, PROTOCOL_RPC)
+
+    local deadline = os.clock() + timeout
+    while os.clock() < deadline do
+        local remaining = deadline - os.clock()
+        local sender_id, message = rednet.receive(PROTOCOL_RPC, remaining)
+        if sender_id == target_id
+            and type(message) == "table"
+            and message.type == "rpc_response"
+            and message.request_id == request_id
+        then
+            return message.success, message.result
+        end
+    end
+    return false, "rpc timeout"
+end
+
+-- stat() a path on a remote /net host.
+-- /net/<hostname>/<path> -> queries the file service on that host.
+local function parse_net_path(net_path)
+    -- /net/<hostname>/<remote_path>
+    local hostname, remote_path = string.match(net_path, "^/net/([^/]+)(/?.*)$")
+    return hostname, remote_path or "/"
+end
+
+function net.stat(net_path)
+    local hostname, remote_path = parse_net_path(net_path)
+    if not hostname then return nil end
+    -- Resolve hostname to rednet ID via discovery cache.
+    local hosts = net.discover_hosts(1)
+    local target_id = nil
+    for _, host in ipairs(hosts) do
+        if host.hostname == hostname then
+            target_id = host.id
+            break
+        end
+    end
+    if not target_id then return nil end
+
+    local ok, result = net.rpc_call(target_id, "filefs", "stat", { path = remote_path })
+    return ok and result or nil
+end
+
+-- Open a remote file for reading or writing over RPC.
+-- Returns a handle-like table with read/write/close, or nil + error.
+function net.open_remote(net_path, mode)
+    local hostname, remote_path = parse_net_path(net_path)
+    if not hostname then return nil, "invalid net path: " .. tostring(net_path) end
+
+    local hosts = net.discover_hosts(1)
+    local target_id = nil
+    for _, host in ipairs(hosts) do
+        if host.hostname == hostname then
+            target_id = host.id
+            break
+        end
+    end
+    if not target_id then return nil, "host not found: " .. hostname end
+
+    local ok, session_token = net.rpc_call(target_id, "filefs", "open", { path = remote_path, mode = mode })
+    if not ok then return nil, tostring(session_token) end
+
+    -- Return a lightweight handle that streams data via additional RPC calls.
+    return {
+        read = function()
+            local _, data = net.rpc_call(target_id, "filefs", "read", { token = session_token })
+            return data
+        end,
+        readAll = function()
+            local _, data = net.rpc_call(target_id, "filefs", "readAll", { token = session_token })
+            return data
+        end,
+        write = function(data)
+            net.rpc_call(target_id, "filefs", "write", { token = session_token, data = data })
+        end,
+        close = function()
+            net.rpc_call(target_id, "filefs", "close", { token = session_token })
+        end,
+    }
+end
+
+return net
+lib/sx/config.lua
+319
+local _M = {}
+
+function _M.getUserHome()
+    return _ENV.ENV and _ENV.ENV.HOME or "/root"
+end
+
+function _M.getAppDirectory(appName)
+    local home = _M.getUserHome()
+    local path = fs.combine(home, ".config/" .. appName)
+    if not fs.exists(path) then
+        fs.makeDir(path)
+    end
+    return path
+end
+
+return _M
+lib/sx/vfs.lua
+5831
+-- /lib/sx/vfs.lua
+local _M = {}
+local native_fs = fs
+
+local mounts = {}
+local symlinks = {}
+local perms = {}
+
+local function persistData(file, data)
+    local f = native_fs.open(file, "w")
+    if f then
+        f.write(textutils.serialize(data)); f.close()
+    end
+end
+
+local function loadData(file)
+    if native_fs.exists(file) then
+        local f = native_fs.open(file, "r")
+        if f then
+            local data = textutils.unserialize(f.readAll())
+            f.close()
+            return data or {}
+        end
+    end
+    return {}
+end
+
+function _M.init()
+    if not native_fs.exists("/etc/sxos") then native_fs.makeDir("/etc/sxos") end
+    mounts = loadData("/etc/sxos/mounts.lua")
+    symlinks = loadData("/etc/sxos/symlinks.lua")
+    perms = loadData("/etc/sxos/permissions.lua")
+end
+
+function _M.save()
+    persistData("/etc/sxos/mounts.lua", mounts)
+    persistData("/etc/sxos/symlinks.lua", symlinks)
+    persistData("/etc/sxos/permissions.lua", perms)
+end
+
+function _M.getMounts() return mounts end
+
+function _M.setMount(path, target)
+    mounts[native_fs.combine("", path)] = target; _M.save()
+end
+
+function _M.clearMount(path)
+    mounts[native_fs.combine("", path)] = nil; _M.save()
+end
+
+function _M.getSymlinks() return symlinks end
+
+function _M.setSymlink(path, target)
+    symlinks[native_fs.combine("", path)] = target; _M.save()
+end
+
+function _M.clearSymlink(path)
+    symlinks[native_fs.combine("", path)] = nil; _M.save()
+end
+
+function _M.getPermissions() return perms end
+
+function _M.setPermission(path, owner, group, mode)
+    perms[native_fs.combine("", path)] = { owner = owner, group = group, mode = mode }
+    _M.save()
+end
+
+local function resolveNode(path)
+    path = native_fs.combine("", path)
+    local current = path
+    local jumps = 0
+    while symlinks[current] and jumps < 20 do
+        current = symlinks[current]
+        jumps = jumps + 1
+    end
+    if jumps >= 20 then error("SXOS VFS: Symbolic link loop detected at " .. path) end
+
+    for mnt, target in pairs(mounts) do
+        if current == mnt or string.sub(current, 1, #mnt + 1) == mnt .. "/" then
+            return true, target .. string.sub(current, #mnt + 1)
+        end
+    end
+    return false, current
+end
+
+function _M.canAccess(path, reqMode, user)
+    if user == "root" then return true end
+    path = native_fs.combine("", path)
+
+    local matchedPerm = nil
+    local matchLen = -1
+    for p, perm in pairs(perms) do
+        if p == path or string.sub(path, 1, #p + 1) == p .. "/" then
+            if #p > matchLen then
+                matchLen = #p
+                matchedPerm = perm
+            end
+        end
+    end
+
+    if not matchedPerm then return true end -- Fail open for unspecified
+
+    local r, w, x = false, false, false
+    if matchedPerm.owner == user then
+        r = string.sub(matchedPerm.mode, 1, 1) == "r"
+        w = string.sub(matchedPerm.mode, 2, 2) == "w"
+        x = string.sub(matchedPerm.mode, 3, 3) == "x"
+    else
+        r = string.sub(matchedPerm.mode, 7, 7) == "r"
+        w = string.sub(matchedPerm.mode, 8, 8) == "w"
+        x = string.sub(matchedPerm.mode, 9, 9) == "x"
+    end
+
+    if reqMode == "r" then return r end
+    if reqMode == "w" then return w end
+    if reqMode == "x" then return x end
+    return false
+end
+
+function _M.create_fs(user)
+    local vfs = {}
+    for k, v in pairs(native_fs) do vfs[k] = v end
+
+    local function wrap1(name, reqMode)
+        return function(path, ...)
+            local isMnt, resolved = resolveNode(path)
+            if isMnt then if reqMode == "w" then error("VFS Mount target is read-only logic layer") end end
+            if not _M.canAccess(resolved, reqMode, user) then error("Permission denied") end
+            return native_fs[name](resolved, ...)
+        end
+    end
+
+    local function wrap1_no_err(name, reqMode)
+        return function(path, ...)
+            local isMnt, resolved = resolveNode(path)
+            if not isMnt and not _M.canAccess(resolved, reqMode, user) then return false end
+            return native_fs[name](resolved, ...)
+        end
+    end
+
+    local function wrap2(name, rmode1, rmode2)
+        return function(p1, p2, ...)
+            local m1, r1 = resolveNode(p1)
+            local m2, r2 = resolveNode(p2)
+            if m1 or m2 then error("VFS Mount target cross-IO restriction") end
+            if not _M.canAccess(r1, rmode1, user) then error("Permission denied") end
+            if not _M.canAccess(r2, rmode2, user) then error("Permission denied") end
+            return native_fs[name](r1, r2, ...)
+        end
+    end
+
+    vfs.list = wrap1("list", "r")
+    vfs.exists = wrap1_no_err("exists", "r")
+    vfs.isDir = wrap1_no_err("isDir", "r")
+    vfs.isReadOnly = wrap1_no_err("isReadOnly", "w")
+    vfs.getName = function(p)
+        local _, r = resolveNode(p); return native_fs.getName(r)
+    end
+    vfs.getDrive = wrap1_no_err("getDrive", "r")
+    vfs.getSize = wrap1_no_err("getSize", "r")
+    vfs.getFreeSpace = wrap1_no_err("getFreeSpace", "r")
+    vfs.makeDir = wrap1("makeDir", "w")
+    vfs.move = wrap2("move", "w", "w")
+    vfs.copy = wrap2("copy", "r", "w")
+    vfs.delete = wrap1("delete", "w")
+    vfs.combine = native_fs.combine
+    vfs.find = wrap1("find", "r")
+    vfs.getDir = function(p)
+        local _, r = resolveNode(p); return native_fs.getDir(r)
+    end
+    vfs.capacity = wrap1_no_err("capacity", "r")
+    vfs.attributes = wrap1("attributes", "r")
+
+    vfs.open = function(path, mode)
+        local isMnt, resolved = resolveNode(path)
+        if isMnt then return nil, "VFS Mount targets unsupported natively" end
+        local reqMode = (mode == "r" or mode == "rb") and "r" or "w"
+        if not _M.canAccess(resolved, reqMode, user) then return nil, "Permission denied" end
+        return native_fs.open(resolved, mode)
+    end
+
+    return vfs
+end
+
+return _M
+lib/devices/generic.lua
+601
+-- /lib/devices/generic.lua
+local driver = {}
+
+function driver.get_capabilities(native)
+    return {}
+end
+
+function driver.open(device_entry)
+    local instance = {
+        _device_id = device_entry.id,
+        _device_type = device_entry.type
+    }
+
+    if device_entry.native then
+        for k, v in pairs(device_entry.native) do
+            if type(v) == "function" then
+                instance[k] = function(...) return v(...) end
+            end
+        end
+    end
+
+    -- Generic VFS Handle Close
+    function instance.close()
+        -- No-op
+    end
+
+    return instance
+end
+
+return driver
+lib/devices/speaker.lua
+1187
+-- /lib/devices/speaker.lua
+local driver = {}
+
+function driver.get_capabilities(native)
+    return { audio = true, stream = true }
+end
+
+function driver.open(device_entry)
+    local instance = {
+        _device_id = device_entry.id,
+        _device_type = device_entry.type
+    }
+
+    if device_entry.native then
+        for k, v in pairs(device_entry.native) do
+            if type(v) == "function" then
+                instance[k] = function(...) return v(...) end
+            end
+        end
+    end
+
+    -- VFS Write override for piping (e.g. `cat song.dfpwm > /dev/speaker0`)
+    -- The driver accepts raw PCM/DFPWM data and flushes it cleanly via CC audio pipeline
+    local dfpwm = require("cc.audio.dfpwm")
+    local decoder = dfpwm.make_decoder()
+
+    function instance.write(chunk)
+        if type(chunk) == "string" and device_entry.native then
+            local decoded = decoder(chunk)
+            -- Play the decoded chunk
+            while not device_entry.native.playAudio(decoded) do
+                os.pullEvent("speaker_audio_empty")
+            end
+        end
+    end
+
+    function instance.close()
+        -- clean up
+    end
+
+    return instance
+end
+
+return driver
+etc/fstab.lua
+416
+return {
+    auto_mount = true,
+
+    devices = {
+        {
+            peripheral = "speaker",
+            path = "/dev/speaker0"
+        },
+        {
+            peripheral = "monitor",
+            path = "/dev/monitor0"
+        },
+        {
+            peripheral = "modem",
+            path = "/dev/modem0"
+        },
+        {
+            peripheral = "drive",
+            path = "/dev/drive0"
+        }
+    }
+}
+lib/ui/theme.lua
+1684
+-- /lib/ui/theme.lua
+-- SXOS terminal theme system.
+-- Loads and validates a user theme from ~/.config/bsh/theme.lua.
+-- Falls back to a built-in default if the user file is absent or malformed.
+
+local theme = {}
+
+-- The default SXOS theme.
+local DEFAULT_THEME = {
+    background    = colors.black,
+    foreground    = colors.lightGray,
+    user_color    = colors.green,
+    root_color    = colors.red,
+    host_color    = colors.white,
+    path_color    = colors.blue,
+    prompt_color  = colors.lightGray,
+    cmd_color     = colors.cyan,
+    cmd_err_color = colors.red,
+    selection_bg  = colors.blue,
+    selection_fg  = colors.white,
+    border_color  = colors.gray,
+    title_color   = colors.white,
+}
+
+-- Load a theme file. Returns the merged theme table.
+-- user_home: the user's home directory
+function theme.load(user_home)
+    local theme_path = (user_home or "/root") .. "/.config/bsh/theme.lua"
+    if not fs.exists(theme_path) then
+        return DEFAULT_THEME
+    end
+
+    local ok, user_theme = pcall(dofile, theme_path)
+    if not ok or type(user_theme) ~= "table" then
+        return DEFAULT_THEME
+    end
+
+    -- Merge user overrides on top of the default.
+    local merged = {}
+    for key, value in pairs(DEFAULT_THEME) do
+        merged[key] = user_theme[key] or value
+    end
+    return merged
+end
+
+-- Apply a theme's background and foreground to the terminal.
+function theme.apply_to_terminal(loaded_theme)
+    term.setBackgroundColor(loaded_theme.background or colors.black)
+    term.setTextColor(loaded_theme.foreground or colors.lightGray)
+end
+
+-- Return the default theme for reference.
+function theme.default()
+    return DEFAULT_THEME
+end
+
+return theme
+services/discoverd.lua
+413
+-- /services/discoverd.lua
+-- SXOS Discovery Daemon.
+-- Makes this host visible to other SXOS nodes on the network.
+-- Loaded by the kernel at Stage 4 boot and runs for the OS lifetime.
+-- To customize the advertised hostname, set the computer label in CraftOS.
+
+local discovery = dofile("/lib/net/discovery.lua")
+
+-- The kernel registers this service; we just start the responder loop.
+discovery.run_responder()
+scripts/post_install.lua
+509
+-- scripts/post_install.lua
+-- Post-install hook for sxos-core.
+-- Runs once after all files have been extracted to their final paths.
+-- Responsible for first-time directory scaffolding that the package
+-- manifest cannot describe (empty dirs, permissions baselines).
+
+local dirs = {
+    "/home",
+    "/var/cache/sxpm",
+    "/var/lib/sxpm",
+    "/etc/sxpm",
+    "/tmp",
+}
+
+for _, d in ipairs(dirs) do
+    if not fs.exists(d) then
+        fs.makeDir(d)
+    end
+end
+
+print("sxos-core: post-install complete.")
+manifest.lua
+3501
+-- manifest.lua
+-- Package manifest for sxos-core.
+-- This is the canonical descriptor for the SXOS core operating system package.
+-- It is consumed by sxpm to install, upgrade, and remove the OS.
+
+return {
+    format = "sxpkg-1",
+
+    meta = {
+        name         = "sxos-core",
+        version      = "2.3.0",
+        author       = "SwirX",
+        description  = "SXOS - core operating system for ComputerCraft",
+        channel      = "stable",
+        package_type = "system",
+    },
+
+    dependencies = {},
+
+    files = {
+        -- Bootloader
+        { path = "/boot/loader.lua",                   source = "boot/loader.lua" },
+
+        -- Fallback Simple Shell
+        { path = "/bin/sh.lua",                        source = "bin/sh.lua" },
+
+        -- Startup dispatcher
+        { path = "/startup.lua",                       source = "startup.lua" },
+
+        -- System skeleton config
+        { path = "/etc/skel/config/sxboot/config.lua", source = "etc/skel/config/sxboot/config.lua" },
+
+        -- Kernel and core sys
+        { path = "/sys/kernel.lua",                    source = "sys/kernel.lua" },
+        { path = "/sys/env.lua",                       source = "sys/env.lua" },
+        { path = "/sys/auth.lua",                      source = "sys/auth.lua" },
+
+        -- Core libraries
+        { path = "/lib/core/log.lua",                  source = "lib/core/log.lua" },
+        { path = "/lib/core/env.lua",                  source = "lib/core/env.lua" },
+        { path = "/lib/core/events.lua",               source = "lib/core/events.lua" },
+        { path = "/lib/core/process.lua",              source = "lib/core/process.lua" },
+        { path = "/lib/core/service.lua",              source = "lib/core/service.lua" },
+        { path = "/lib/core/sx.lua",                   source = "lib/core/sx.lua" },
+        { path = "/lib/core/device.lua",               source = "lib/core/device.lua" },
+
+        -- Compatibility shims
+        { path = "/lib/compat/peripheral.lua",         source = "lib/compat/peripheral.lua" },
+
+        -- Filesystem libraries
+        { path = "/lib/fs/vfs.lua",                    source = "lib/fs/vfs.lua" },
+        { path = "/lib/fs/path.lua",                   source = "lib/fs/path.lua" },
+        { path = "/lib/fs/permissions.lua",            source = "lib/fs/permissions.lua" },
+
+        -- Shell libraries extracted to bsh package
+
+        -- Network libraries
+        { path = "/lib/net/discovery.lua",             source = "lib/net/discovery.lua" },
+        { path = "/lib/net/rednet.lua",                source = "lib/net/rednet.lua" },
+
+        -- SX config + VFS shim
+        { path = "/lib/sx/config.lua",                 source = "lib/sx/config.lua" },
+        { path = "/lib/sx/vfs.lua",                    source = "lib/sx/vfs.lua" },
+
+        -- Device Driver Backends
+        { path = "/lib/devices/generic.lua",           source = "lib/devices/generic.lua" },
+        { path = "/lib/devices/speaker.lua",           source = "lib/devices/speaker.lua" },
+
+        -- Fstab configurations
+        { path = "/etc/sxos/fstab.lua",                source = "etc/fstab.lua" },
+
+        -- UI library
+        { path = "/lib/ui/theme.lua",                  source = "lib/ui/theme.lua" },
+
+        -- Services
+        { path = "/services/discoverd.lua",            source = "services/discoverd.lua" },
+    },
+
+    lifecycle = {
+        post_install = "scripts/post_install.lua",
+    },
+
+    integrity = {
+        sha256 = "",
+    },
+}
