@@ -1,0 +1,39 @@
+SXP1
+manifest.lua
+952
+return {
+    format = "sxpkg-1",
+
+    meta = {
+        name         = "sx-devtools",
+        version      = "1.0.1",
+        author       = "SwirX",
+        description  = "Developer tools and debugging utilities",
+        channel      = "stable",
+        package_type = "system",
+    },
+
+    dependencies = {
+        "sxos-core",
+        "sx-coreutils",
+        "bsh",
+    },
+
+    files = {
+        { path = "/bin/git.lua",  source = "bin/git.lua",  executable = true },
+
+        { path = "/bin/help.lua", source = "bin/help.lua", executable = true },
+
+        { path = "/bin/lua.lua",  source = "bin/lua.lua",  executable = true },
+
+        { path = "/bin/ps.lua",   source = "bin/ps.lua",   executable = true },
+        { path = "/bin/jobs.lua", source = "bin/jobs.lua", executable = true },
+        { path = "/bin/kill.lua", source = "bin/kill.lua", executable = true },
+    },
+
+    lifecycle = {},
+
+    integrity = {
+        sha256 = "",
+    },
+}

@@ -1,0 +1,33 @@
+SXP1
+manifest.lua
+544
+return {
+    format = "sxpkg-1",
+
+    meta = {
+        name         = "sxos-desktop",
+        version      = "1.1.0",
+        author       = "SwirX",
+        description  = "Desktop-oriented SXOS installation profile",
+        channel      = "stable",
+        package_type = "meta",
+    },
+
+    dependencies = {
+        "sxos-minimal",
+        "sx-netutils",
+        "sx-devtools",
+        "sx-fetch",
+        "yate",
+        "yafe",
+        "sxui",
+    },
+
+    files = {},
+
+    lifecycle = {},
+
+    integrity = {
+        sha256 = "",
+    },
+}

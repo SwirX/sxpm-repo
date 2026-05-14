@@ -1,0 +1,481 @@
+SXP1
+bin/ping.lua
+1138
+-- /bin/ping.lua
+-- Ping a remote SXOS host by computer ID or hostname.
+-- Reports round-trip time or timeout.
+
+local net = dofile("/lib/net/rednet.lua")
+
+local args = { ... }
+local target = args[1]
+
+if not target then
+    print("Usage: ping <computer_id>")
+    return
+end
+
+local target_id = tonumber(target)
+if not target_id then
+    -- Resolve hostname via discovery.
+    print("Resolving '" .. target .. "'...")
+    local hosts = net.discover_hosts(2)
+    for _, host in ipairs(hosts) do
+        if host.hostname == target then
+            target_id = host.id
+            break
+        end
+    end
+    if not target_id then
+        printError("ping: host not found: " .. target)
+        return
+    end
+end
+
+local count = tonumber(args[2]) or 4
+print("PING " .. target_id .. " (" .. count .. " packets)")
+local received = 0
+for i = 1, count do
+    local rtt = net.ping(target_id, 3)
+    if rtt then
+        print(string.format("  seq=%d rtt=%.1fms", i, rtt * 1000))
+        received = received + 1
+    else
+        print(string.format("  seq=%d timeout", i))
+    end
+end
+print(string.format("%d/%d packets received.", received, count))
+bin/discover.lua
+1780
+local PROTOCOL_DISCOVER = "SXOS_DISCOVER"
+local PROTOCOL_ANNOUNCE = "SXOS_ANNOUNCE"
+
+local has_open_modem = false
+for _, side in ipairs(peripheral.getNames()) do
+    if peripheral.getType(side) == "modem" then
+        if not rednet.isOpen(side) then rednet.open(side) end
+        has_open_modem = true
+    end
+end
+if not has_open_modem then
+    printError("No network modem available.")
+    return
+end
+
+print("Scanning network...")
+rednet.broadcast({ type = "discover" }, PROTOCOL_DISCOVER)
+
+local hosts = {}
+local host_services = {}
+local host_devices = {}
+
+local timeout = os.startTimer(1.5)
+
+while true do
+    local e, p1, p2, p3 = os.pullEvent()
+    if e == "timer" and p1 == timeout then
+        break
+    elseif e == "rednet_message" then
+        local sender, msg, protocol = p1, p2, p3
+        if protocol == PROTOCOL_ANNOUNCE and type(msg) == "table" then
+            local hname = msg.hostname or tostring(sender)
+            hosts[hname] = true
+            if msg.services then
+                for _, s in ipairs(msg.services) do
+                    host_services[s] = true
+                end
+            end
+            if msg.devices then
+                for _, d in ipairs(msg.devices) do
+                    table.insert(host_devices, hname .. "/" .. d)
+                end
+            end
+        end
+    end
+end
+
+print("\nHOSTS")
+local has_hosts = false
+for h in pairs(hosts) do
+    print(h); has_hosts = true
+end
+if not has_hosts then print("  None") end
+
+print("\nSERVICES")
+local has_svcs = false
+for s in pairs(host_services) do
+    print(s); has_svcs = true
+end
+if not has_svcs then print("  None") end
+
+print("\nDEVICES")
+local has_devs = false
+for _, d in ipairs(host_devices) do
+    print(d); has_devs = true
+end
+if not has_devs then print("  None") end
+bin/netstat.lua
+683
+-- /bin/netstat.lua
+-- Display active network services and host identity.
+
+local net     = dofile("/lib/net/rednet.lua")
+local svc_lib = dofile("/lib/core/service.lua")
+
+print("SXOS Network Status")
+print(string.rep("-", 40))
+print("Computer ID:  " .. os.getComputerID())
+print("Label:        " .. (os.getComputerLabel() or "(none)"))
+
+local services = svc_lib.list()
+if #services > 0 then
+    print("")
+    print("Running services:")
+    for _, entry in ipairs(services) do
+        print(string.format("  %-20s  pid=%d", entry.name, entry.pid))
+    end
+else
+    print("No local services running.")
+end
+
+print("")
+print("Modem status:  " .. (rednet.isOpen() and "open" or "closed"))
+bin/devices.lua
+558
+local device = require("sx.device")
+local all_devices = device.get_all()
+
+print(string.format("%-15s %-10s %-10s %-15s", "ID", "TYPE", "STATE", "MOUNT"))
+for _, dev in ipairs(all_devices) do
+    local state = "detached"
+    if dev.mounted then
+        state = "mounted"
+    elseif dev.side or dev.remote then
+        state = "available"
+    end
+
+    if dev.exclusive then state = "claimed" end
+
+    local mountpoint = dev.mounted and dev.mountpoint or "-"
+
+    print(string.format("%-15s %-10s %-10s %-15s",
+        dev.id, dev.type, state, mountpoint))
+end
+bin/peripherals.lua
+521
+local device = require("sx.device")
+local devs = device.get_all()
+
+print(string.format("%-12s %-10s %-10s %-10s %-10s", "ID", "TYPE", "LOCATION", "OWNER", "STATE"))
+for _, dev in ipairs(devs) do
+    local state = dev.mounted and "mounted" or "available"
+    if dev.exclusive then state = "claimed" end
+    local loc = dev.side or "remote"
+    local owner = dev.owner_process and tostring(dev.owner_process) or "-"
+    print(string.format("%-12s %-10s %-10s %-10s %-10s",
+        dev.id, dev.type, loc, owner, state))
+end
+bin/attach.lua
+1151
+local device = require("sx.device")
+local all_devices = device.get_all()
+
+local available = {}
+local mounted = {}
+local claimed = {}
+local remote = {}
+
+for _, dev in ipairs(all_devices) do
+    if dev.mounted then
+        table.insert(mounted, dev)
+    elseif dev.remote then
+        table.insert(remote, dev)
+    elseif dev.exclusive then
+        table.insert(claimed, dev)
+    else
+        table.insert(available, dev)
+    end
+end
+
+if #available > 0 then
+    print("AVAILABLE:")
+    for _, dev in ipairs(available) do
+        print(dev.side .. " " .. dev.type)
+    end
+    print()
+end
+
+if #mounted > 0 then
+    print("MOUNTED:")
+    for _, dev in ipairs(mounted) do
+        print(dev.id .. " -> " .. dev.mountpoint)
+    end
+    print()
+end
+
+if #claimed > 0 then
+    print("CLAIMED:")
+    for _, dev in ipairs(claimed) do
+        print(dev.id .. " [by PID " .. tostring(dev.owner_process) .. "]")
+    end
+    print()
+end
+
+if #remote > 0 then
+    print("REMOTE:")
+    for _, dev in ipairs(remote) do
+        print(dev.id .. " (" .. tostring(dev.side) .. ")")
+    end
+    print()
+end
+
+if #all_devices == 0 then
+    print("No peripherals detected.")
+end
+bin/monitors.lua
+530
+local device = require("sx.device")
+local all_devices = device.get_all()
+
+print(string.format("%-12s %-8s %-10s", "NAME", "SIZE", "SIDE"))
+for _, dev in ipairs(all_devices) do
+    if dev.type == "monitor" then
+        local mon = device.open(dev.id)
+        local size_str = "unknown"
+        if mon and type(mon.getSize) == "function" then
+            local w, h = mon.getSize()
+            size_str = w .. "x" .. h
+        end
+        print(string.format("%-12s %-8s %-10s", dev.id, size_str, dev.side or "remote"))
+    end
+end
+bin/monitorctl.lua
+1749
+local args = { ... }
+
+if #args == 0 or args[1] == "list" then
+    print(string.format("%-12s %-12s %-10s", "MONITOR", "SIZE", "STATE"))
+    local device = require("sx.device")
+    for _, dev in ipairs(device.get_all()) do
+        if dev.type == "monitor" then
+            local mon = device.open(dev.id)
+            local size_str = "unknown"
+            if mon and type(mon.getSize) == "function" then
+                local w, h = mon.getSize()
+                size_str = w .. "x" .. h
+            end
+            print(string.format("%-12s %-12s %-10s", dev.id, size_str, dev.mounted and "mounted" or "available"))
+        end
+    end
+    return
+end
+
+local cmd = args[1]
+
+if cmd == "scale" then
+    local id, scale = args[2], tonumber(args[3])
+    if not scale then
+        print("Usage: monitorctl scale <monitor_id> <scale>"); return
+    end
+
+    local mon = require("sx.device").open(id)
+    if mon and mon.setTextScale then
+        mon.setTextScale(scale)
+        print("Set text scale to " .. scale)
+    else
+        printError("Monitor context invalid")
+    end
+elseif cmd == "clear" then
+    local id = args[2]
+    if not id then
+        print("Usage: monitorctl clear <monitor_id>"); return
+    end
+    local mon = require("sx.device").open(id)
+    if mon and mon.clear then
+        mon.clear()
+        if mon.setCursorPos then mon.setCursorPos(1, 1) end
+    else
+        printError("Monitor context invalid")
+    end
+elseif cmd == "mirror" then
+    local target, tty_id = args[2], args[3]
+    if not tty_id then
+        print("Usage: monitorctl mirror <monitor_id> <tty_id>"); return
+    end
+    print("Mirroring " .. tty_id .. " on " .. target .. " (stub: waiting for Compositor)")
+else
+    printError("Unknown monitorctl command.")
+end
+bin/speak.lua
+1861
+local args = { ... }
+
+if #args < 1 then
+    print("Usage: speak [file.dfpwm]")
+    print("Or pipe data: cat song.dfpwm > /dev/speaker0")
+    return
+end
+
+local path = args[1]
+if not fs.exists(path) then
+    print("File not found: " .. path)
+    return
+end
+
+-- Fallback speak command logic routing
+-- A wrapper specifically looking to write the raw encoded file iteratively to a speaker
+local device = require("sx.device")
+
+-- Find the first available speaker
+local def_id
+for _, dev in ipairs(device.get_all()) do
+    if dev.type == "speaker" then
+        def_id = dev.id
+        break
+    end
+end
+
+if not def_id then
+    printError("No speakers available")
+    return
+end
+
+local speaker_vfs_path = nil
+-- Does the user have this mounted somewhere?
+local dev = device.get(def_id)
+if dev and dev.mounted then
+    speaker_vfs_path = dev.mountpoint
+end
+
+if speaker_vfs_path then
+    -- We can just execute a synthetic shell command bridging it through VFS natively
+    print("Pumping " .. path .. " through VFS to " .. speaker_vfs_path)
+    local inp = fs.open(path, "rb")
+    local out = require("sx").fs.open(speaker_vfs_path, "w")
+    if inp and out then
+        while true do
+            local chunk = inp.read(16 * 1024)
+            if not chunk or chunk == "" then break end
+            out.write(chunk)
+        end
+        inp.close()
+        out.close()
+        print("Done playing.")
+    else
+        printError("IO Error")
+    end
+else
+    -- Fallback via direct driver API
+    local mon = device.open(def_id)
+    print("Playing via pure API to " .. def_id)
+    if mon and mon.write then
+        local inp = fs.open(path, "rb")
+        while true do
+            local chunk = inp.read(16 * 1024)
+            if not chunk or chunk == "" then break end
+            mon.write(chunk)
+        end
+        inp.close()
+        print("Done playing.")
+    end
+end
+bin/rednet.lua
+1680
+local args = { ... }
+if #args < 1 then
+    print("Usage:")
+    print("  rednet open <side|down|top|back|front|left|right>")
+    print("  rednet close <side>")
+    print("  rednet send <id> <msg> [protocol]")
+    print("  rednet broadcast <msg> [protocol]")
+    print("  rednet listen [timeout]")
+    return
+end
+
+local cmd = args[1]
+if cmd == "open" then
+    if not args[2] then
+        printError("Missing side"); return
+    end
+    rednet.open(args[2])
+    print("Opened rednet on " .. args[2])
+elseif cmd == "close" then
+    if not args[2] then
+        printError("Missing side"); return
+    end
+    rednet.close(args[2])
+    print("Closed rednet on " .. args[2])
+elseif cmd == "send" then
+    local id = tonumber(args[2])
+    if not id then
+        printError("Invalid ID"); return
+    end
+    local msg = args[3]
+    local protocol = args[4]
+    rednet.send(id, msg, protocol)
+    print("Sent message to " .. id)
+elseif cmd == "broadcast" then
+    local msg = args[2]
+    local protocol = args[3]
+    if not msg then
+        printError("Missing message"); return
+    end
+    rednet.broadcast(msg, protocol)
+    print("Broadcasted message")
+elseif cmd == "listen" then
+    local timeout = tonumber(args[2])
+    print("Listening for messages" .. (timeout and (" for " .. timeout .. "s") or " indefinitely") .. "...")
+    while true do
+        local id, msg, protocol = rednet.receive(nil, timeout)
+        if not id then
+            print("Receiving timed out.")
+            break
+        end
+        print(string.format("[%d] %s (proto: %s)", id, tostring(msg), tostring(protocol)))
+        if timeout then break end
+    end
+else
+    printError("Unknown command: " .. cmd)
+end
+manifest.lua
+1406
+return {
+    format = "sxpkg-1",
+
+    meta = {
+        name         = "sx-netutils",
+        version      = "1.1.0",
+        author       = "SwirX",
+        description  = "Networking, discovery, and peripheral utilities",
+        channel      = "stable",
+        package_type = "system",
+    },
+
+    dependencies = {
+        "sxos-core",
+        "sx-coreutils",
+    },
+
+    files = {
+        { path = "/bin/ping.lua",        source = "bin/ping.lua",        executable = true },
+        { path = "/bin/discover.lua",    source = "bin/discover.lua",    executable = true },
+        { path = "/bin/netstat.lua",     source = "bin/netstat.lua",     executable = true },
+
+        { path = "/bin/devices.lua",     source = "bin/devices.lua",     executable = true },
+        { path = "/bin/peripherals.lua", source = "bin/peripherals.lua", executable = true },
+        { path = "/bin/attach.lua",      source = "bin/attach.lua",      executable = true },
+
+        { path = "/bin/monitors.lua",    source = "bin/monitors.lua",    executable = true },
+        { path = "/bin/monitorctl.lua",  source = "bin/monitorctl.lua",  executable = true },
+
+        { path = "/bin/speak.lua",       source = "bin/speak.lua",       executable = true },
+
+        { path = "/bin/rednet.lua",      source = "bin/rednet.lua",      executable = true },
+    },
+
+    lifecycle = {},
+
+    integrity = {
+        sha256 = "",
+    },
+}
