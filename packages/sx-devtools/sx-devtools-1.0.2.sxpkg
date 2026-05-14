@@ -1,0 +1,187 @@
+SXP1
+bin/git.lua
+232
+local args = { ... }
+if args[1] == "clone" then
+    printError("git clone is not fully implemented in this minimal env. Use wget.")
+else
+    print("SXOS Git Wrapper")
+    print("Commands:")
+    print("  clone <repo> (Stubbed)")
+end
+bin/help.lua
+1183
+-- /bin/help.lua
+-- Quick command reference for SXOS / bsh.
+
+print("bsh - SXOS Shell  (Tab: complete   Shift+Tab: reverse cycle)")
+print("Ctrl+Left/Right: word hop   Ctrl+Backspace: delete word")
+print("")
+print("Files:")
+print("  ls cd pwd touch rm cat cp mv mkdir mkcd")
+print("  ln chmod chown find grep diff")
+print("  yate <file>   text editor")
+print("  yafe          file explorer")
+print("")
+print("System:")
+print("  clear shutdown reboot env ps jobs kill")
+print("  which mount umount netstat ping discover")
+print("")
+print("Network:")
+print("  wget <url> <file>   download a file")
+print("  wget run <url>      download and execute")
+print("  curl <url>          print HTTP response")
+print("  git <subcmd>        basic git operations")
+print("")
+print("Packages:")
+print("  sxpm install <pkg>  install a package")
+print("  sxpm remove <pkg>   remove a package")
+print("  sxpm upgrade        upgrade all packages")
+print("  sxpm search <q>     search the repository")
+print("  sxpm list           list installed packages")
+print("  sxpm info <pkg>     show package details")
+print("  sxpm sync           refresh repository index")
+print("")
+print("Fetch info:  sxfetch")
+bin/lua.lua
+1918
+-- /bin/lua.lua
+-- Interactive Lua REPL for SXOS.
+-- Provides a persistent evaluation environment across lines.
+-- Supports multi-line input by detecting trailing incomplete expressions.
+-- Type 'exit' or press Ctrl+D to quit.
+
+local repl_env = setmetatable({}, { __index = _ENV })
+repl_env._ENV = repl_env
+
+print("SX Lua REPL. Type 'exit' to quit.")
+print("Variables persist across lines.")
+print("")
+
+local line_count = 0
+local accumulated = ""
+
+while true do
+    line_count = line_count + 1
+    local prompt = (accumulated == "") and ("lua:%d> "):format(line_count) or ("   ...> ")
+    io.write(prompt)
+    local line = io.read()
+
+    if line == nil or line == "exit" then
+        break
+    end
+
+    local input = accumulated .. line
+
+    -- Try to compile as an expression first (return <expr>).
+    local as_expression = "return " .. input
+    local expr_fn, _ = load(as_expression, "repl", "t", repl_env)
+    if expr_fn then
+        accumulated = ""
+        local results = table.pack(pcall(expr_fn))
+        if results[1] then
+            for i = 2, results.n do
+                local value = results[i]
+                if value ~= nil then
+                    print(tostring(value))
+                end
+            end
+        else
+            printError(tostring(results[2]))
+        end
+        goto continue
+    end
+
+    -- Try to compile as a statement block.
+    local stmt_fn, stmt_err = load(input, "repl", "t", repl_env)
+    if stmt_fn then
+        accumulated = ""
+        local ok, run_err = pcall(stmt_fn)
+        if not ok then
+            printError(tostring(run_err))
+        end
+    else
+        -- If the error indicates an incomplete expression, accumulate more lines.
+        if string.find(tostring(stmt_err), "<eof>") then
+            accumulated = input .. "\n"
+        else
+            accumulated = ""
+            printError(tostring(stmt_err))
+        end
+    end
+
+    ::continue::
+end
+bin/ps.lua
+293
+local jobs = shell.get_jobs and shell.get_jobs() or {}
+print("PID\tSTATUS\t\tCMD")
+if #jobs == 0 then
+    print("No active background jobs.")
+    return
+end
+
+for _, j in ipairs(jobs) do
+    local state = coroutine.status(j.co)
+    print(string.format("%d\t%s\t\t%s", j.pid, state, j.cmd))
+end
+bin/jobs.lua
+20
+shell.execute("ps")
+bin/kill.lua
+346
+local args = { ... }
+if #args == 0 then
+    printError("kill: usage: kill <pid>")
+    return
+end
+
+local pid = tonumber(args[1])
+if not pid then
+    printError("kill: invalid pid")
+    return
+end
+
+if shell.kill_bg and shell.kill_bg(pid) then
+    print("Terminated process " .. pid)
+else
+    printError("kill: process " .. pid .. " not found")
+end
+manifest.lua
+952
+return {
+    format = "sxpkg-1",
+
+    meta = {
+        name         = "sx-devtools",
+        version      = "1.0.2",
+        author       = "SwirX",
+        description  = "Developer tools and debugging utilities",
+        channel      = "stable",
+        package_type = "system",
+    },
+
+    dependencies = {
+        "sxos-core",
+        "sx-coreutils",
+        "bsh",
+    },
+
+    files = {
+        { path = "/bin/git.lua",  source = "bin/git.lua",  executable = true },
+
+        { path = "/bin/help.lua", source = "bin/help.lua", executable = true },
+
+        { path = "/bin/lua.lua",  source = "bin/lua.lua",  executable = true },
+
+        { path = "/bin/ps.lua",   source = "bin/ps.lua",   executable = true },
+        { path = "/bin/jobs.lua", source = "bin/jobs.lua", executable = true },
+        { path = "/bin/kill.lua", source = "bin/kill.lua", executable = true },
+    },
+
+    lifecycle = {},
+
+    integrity = {
+        sha256 = "",
+    },
+}

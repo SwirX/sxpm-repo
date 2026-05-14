@@ -180,7 +180,7 @@
         }
     },
     "sx-devtools": {
-        "latest": "1.0.1",
+        "latest": "1.0.2",
         "versions": {
             "1.0.0": {
                 "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/dev/packages/sx-devtools/sx-devtools-1.0.0.sxpkg",
@@ -191,6 +191,11 @@
                 "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/dev/packages/sx-devtools/sx-devtools-1.0.1.sxpkg",
                 "sha256": "ef72f5783c97a1494a150da8bffba2dbf8513ed67460b4856b8a7659e26100b4",
                 "size": 974
+            },
+            "1.0.2": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sx-devtools/sx-devtools-1.0.2.sxpkg",
+                "sha256": "552bc04e4d80dbb6262b3094c9956ed8a083940fd8465e9946e641377cc02499",
+                "size": 5065
             }
         }
     }
