@@ -648,7 +648,7 @@ while true do
     ::continue::
 end
 manifest.lua
-2793
+2878
 -- manifest.lua
 -- Package manifest for sx-coreutils.
 -- Core UNIX-style utilities required by SXOS userspace.
@@ -707,6 +707,9 @@ return {
 
         -- Lua userspace
         { path = "/bin/lua.lua",    source = "bin/lua.lua",    executable = true },
+
+        -- Bootloader
+        { path = "/startup.lua",    source = "/startup.lua" }
     },
 
     lifecycle = {},
