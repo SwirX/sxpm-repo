@@ -648,7 +648,7 @@ while true do
     ::continue::
 end
 manifest.lua
-2819
+2793
 -- manifest.lua
 -- Package manifest for sx-coreutils.
 -- Core UNIX-style utilities required by SXOS userspace.
@@ -665,9 +665,7 @@ return {
         package_type = "system",
     },
 
-    dependencies = {
-        "sxos-core",
-    },
+    dependencies = {},
 
     files = {
         -- Core filesystem navigation
