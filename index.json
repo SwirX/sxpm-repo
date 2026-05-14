@@ -85,12 +85,17 @@
         }
     },
     "yate": {
-        "latest": "1.0.0",
+        "latest": "1.1.0",
         "versions": {
             "1.0.0": {
                 "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/dev/packages/yate/yate-1.0.0.sxpkg",
                 "sha256": "a929b1c9c7fc57ff940a6bc140cf96509c42ba2bca28009e27eddc4a3eae9dd9",
                 "size": 14827
+            },
+            "1.1.0": {
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/dev/packages/yate/yate-1.1.0.sxpkg",
+                "sha256": "abba9e8cd0ffb8f7bfb5d27133d4778d0dca28f467c4d91cdb91fbda19eb154c",
+                "size": 21400
             }
         }
     },
@@ -193,7 +198,7 @@
                 "size": 974
             },
             "1.0.2": {
-                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/stable/packages/sx-devtools/sx-devtools-1.0.2.sxpkg",
+                "url": "https://raw.githubusercontent.com/SwirX/sxpm-repo/dev/packages/sx-devtools/sx-devtools-1.0.2.sxpkg",
                 "sha256": "552bc04e4d80dbb6262b3094c9956ed8a083940fd8465e9946e641377cc02499",
                 "size": 5065
             }
